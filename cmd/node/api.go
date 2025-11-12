@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"mess"
 	"mess/internal"
 	"net/http"
@@ -150,26 +151,43 @@ func BodyTo[T any](r *http.Request) (*T, error) {
 
 /**/
 
-func (n *node) serviceCommand(command string, cmd *internal.ServiceCommand) (error, error) {
+func (n *node) serviceCommand(command string, cmd *internal.ServiceCommand) (rerr error, serr error) {
 	if pm := (*n.localServices.Load()).getByRealmAndName(cmd.Realm, cmd.Service); pm != nil {
 
 		defer n.rebuildAliasMap()
+		defer func() {
+			if serr != nil {
+				n.logf("error executing %v command: %v", command, serr)
+			}
+		}()
+
+		s := pm.Service()
 
 		switch command {
 		case "start":
+			log.Printf("starting service %v@%v...\n", s.Name, s.Realm)
 			return nil, pm.Start()
+
 		case "stop":
+			log.Printf("stopping service %v@%v...\n", s.Name, s.Realm)
 			return nil, pm.Stop(cmd.Timeout)
+
 		case "restart":
+			log.Printf("stopping service %v@%v...\n", s.Name, s.Realm)
 			if err := pm.Stop(cmd.Timeout); err != nil {
 				return nil, err
 			}
+			log.Printf("starting service %v@%v...\n", s.Name, s.Realm)
 			return nil, pm.Start()
+
 		case "delete":
+			log.Printf("deleting service %v@%v...\n", s.Name, s.Realm)
 			err := pm.Delete()
-			if err == nil {
-				err = n.deleteService(pm.Service())
+			if err != nil {
+				return nil, err
 			}
+			return nil, n.deleteService(pm.Service())
+
 		default:
 			return fmt.Errorf("unknown command: %v", command), nil
 		}

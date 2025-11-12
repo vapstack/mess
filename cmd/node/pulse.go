@@ -14,21 +14,20 @@ import (
 
 func (n *node) pulsing() {
 	defer n.wg.Done()
-	interval := 27 * time.Second
 	for {
 		select {
 		case <-n.ctx.Done():
 			return
-		case <-time.After(interval):
+		case <-time.After(27 * time.Second):
 			d := n.getStatefullData()
 			b := new(bytes.Buffer)
 			e := gob.NewEncoder(b).Encode(d)
 			if e != nil {
-				n.messlogf("pulse: encode: %v", e)
+				n.logf("pulse: encode: %v", e)
 				continue
 			}
 			for _, rec := range n.data.Load().Map {
-				if time.Since(time.Unix(rec.LastSync, 0)) > interval {
+				if rec.ID > n.id || time.Since(time.Unix(rec.LastSync, 0)) > 2*time.Minute {
 					go n.pulse(rec, b.Bytes())
 				}
 			}
@@ -43,7 +42,7 @@ func (n *node) pulse(rec *mess.Node, data []byte) {
 	dst := fmt.Sprintf("https://%v:%v/pulse", rec.Address(), mess.PublicPort)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, dst, bytes.NewReader(data))
 	if err != nil {
-		n.messlogf("pulse: creating request to %v: %v", dst, err)
+		n.logf("pulse: creating request to %v: %v", dst, err)
 		return
 	}
 
@@ -55,7 +54,7 @@ func (n *node) pulse(rec *mess.Node, data []byte) {
 
 	res, err := n.client.Do(req)
 	if err != nil {
-		n.messlogf("pulse: request to %v: %v", dst, err)
+		n.logf("pulse: request to %v: %v", dst, err)
 		return
 	}
 	defer func(rsp *http.Response) { _ = rsp.Body.Close() }(res)
@@ -64,24 +63,24 @@ func (n *node) pulse(rec *mess.Node, data []byte) {
 	if res.StatusCode != http.StatusOK {
 		b, err := io.ReadAll(res.Body)
 		if err != nil {
-			n.messlogf("pulse: reading body: %v", err)
+			n.logf("pulse: reading body: %v", err)
 			return
 		}
 		if len(b) > 0 {
-			n.messlogf("pulse: status: %v, body: %v", res.StatusCode, string(b))
+			n.logf("pulse: status: %v, body: %v", res.StatusCode, string(b))
 			return
 		}
-		n.messlogf("pulse: status: %v", res.StatusCode)
+		n.logf("pulse: status: %v", res.StatusCode)
 		return
 	}
 
 	v := new(mess.NodeData)
 	if err = gob.NewDecoder(res.Body).Decode(v); err != nil {
-		n.messlogf("pulse: decoding body: %v", err)
+		n.logf("pulse: decoding body: %v", err)
 		return
 	}
 	if _, err = n.applyPeerMap(v, rec.Address()); err != nil {
-		n.messlogf("pulse: %v", err)
+		n.logf("pulse: %v", err)
 	}
 }
 

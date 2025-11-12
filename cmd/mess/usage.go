@@ -27,6 +27,10 @@ var commandUsage = map[string][]string{
 		"Add a node to the mess",
 		"$ mess greet <ip_addr>",
 	},
+	"forget": {
+		"Remove a node from the mess",
+		"$ mess forget <ip_addr|node_id>",
+	},
 	"rotate": {
 		"Rotate node certificates",
 		"$ mess rotate [lifetime_days] [force]",

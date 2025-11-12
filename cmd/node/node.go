@@ -22,7 +22,7 @@ import (
 	"syscall"
 	"time"
 
-	"go.etcd.io/bbolt"
+	"github.com/rosedblabs/rosedb/v2"
 )
 
 func main() {
@@ -66,12 +66,6 @@ func main() {
 
 	n.ctx, _ = signal.NotifyContext(context.Background(), os.Interrupt, os.Kill, syscall.SIGTERM, syscall.SIGHUP)
 
-	// if err = os.Remove(n.sock); !errors.Is(err, os.ErrNotExist) {
-	// 	log.Println("fatal: removing previous socket file:", err)
-	// 	return
-	// }
-	// defer func() { _ = os.Remove(n.sock) }()
-
 	/**/
 
 	if n.dev {
@@ -92,18 +86,21 @@ func main() {
 		}
 		defer func() {
 			n.logs.Range(func(key, value any) bool {
-				bolt, ok := value.(*bbolt.DB)
+				db, ok := value.(*rosedb.DB)
 				if !ok {
-					log.Println("error closing logs: sync.Map value is not *bbolt.DB")
+					log.Println("error closing logs: sync.Map value is not *rosedb.DB")
 				}
-				filename := bolt.Path()
-				if e := bolt.Close(); e != nil {
-					log.Printf("error closing log db %v: %v", filename, e)
+				if e := db.Close(); e != nil {
+					log.Printf("error closing log db [%v]: %v", key, e)
 				}
 				return true
 			})
 		}()
 	}
+
+	/**/
+
+	n.seq = newSeqGen(n.id)
 
 	/**/
 
@@ -146,17 +143,17 @@ func main() {
 
 	var publicServerErr chan error
 
-	if !n.dev {
-		var publicStop func()
-		publicStop, publicServerErr, err = n.setupPublicServer()
-		if err != nil {
-			log.Println("fatal:", err)
-			return
-		}
-		defer publicStop()
-
-		log.Println("public listener started")
+	// if !n.dev {
+	var publicStop func()
+	publicStop, publicServerErr, err = n.setupPublicServer()
+	if err != nil {
+		log.Println("fatal:", err)
+		return
 	}
+	defer publicStop()
+
+	// log.Println("public listener started")
+	// }
 
 	/**/
 
@@ -208,6 +205,7 @@ type node struct {
 	logdir string
 	tmpdir string
 	dev    bool
+	seq    *seqgen
 
 	data atomic.Pointer[mess.NodeData]
 	cert atomic.Pointer[tls.Certificate]
@@ -224,8 +222,7 @@ type node struct {
 	client *http.Client
 	proxy  *httputil.ReverseProxy
 
-	logs sync.Map // map["realm_service"]*bbolt.DB
-	// logs *bbolt.DB
+	logs sync.Map // map["realm_service"]*rosedb.DB
 
 	ctx  context.Context
 	stop func()
@@ -344,7 +341,7 @@ func (n *node) start() error {
 	n.wg.Add(1)
 	go n.recalcRemoteServices()
 
-	go n.runServices()
+	n.runServices()
 
 	return nil
 }
@@ -376,8 +373,9 @@ func (n *node) runServices() {
 		// 	n.messlogf("duplicate service declaration: %v", s.Name)
 		// 	continue
 		// }
+
 		if err := n.runService(s); err != nil {
-			n.messlogf("failed to initialize process manager for %v@%v: %v", s.Name, s.Realm, err)
+			n.logf("failed to initialize process manager for %v@%v: %v", s.Name, s.Realm, err)
 			continue
 		}
 		// pm, err := proc.NewManager(n.dev, n.svcdir, s) // newPM(n, s)
@@ -393,9 +391,12 @@ func (n *node) runServices() {
 }
 
 func (n *node) runService(s *mess.Service) error {
+
+	log.Printf("starting process manager for %v@%v...\n", s.Name, s.Realm)
+
 	rm := *n.localServices.Load()
 	if rm.get(s) != nil {
-		return fmt.Errorf("service %v is already running", s.Name)
+		return fmt.Errorf("service %v@%v is already running", s.Name, s.Realm)
 	}
 
 	xm := rm.clone()
@@ -414,47 +415,59 @@ func (n *node) runService(s *mess.Service) error {
 func (n *node) startLogWriters(pm *proc.Manager) {
 
 	go func() {
-		logs := make([][]byte, 0, 128)
+		logs := make([][]byte, 0, 256)
+		svc := pm.Service()
 		ch := pm.BinLogs()
-		var l []byte
+
+		tick := time.NewTicker(time.Second)
+		defer tick.Stop()
+
 		for {
-			ok := true
 			select {
-			case l, ok = <-ch:
-				if ok {
-					logs = append(logs, l)
-					if len(logs) < 1000 {
-						runtime.Gosched()
-						continue
+			case l, ok := <-ch:
+				if !ok {
+					if len(logs) > 0 {
+						n.writeLogs(svc.Realm, svc.Name, logs...)
+					}
+					return
+				}
+				logs = append(logs, l)
+			DRAIN:
+				for len(logs) < 1000 {
+					select {
+					case l, ok = <-ch:
+						if !ok {
+							break DRAIN
+						}
+						logs = append(logs, l)
+					default:
+						break DRAIN
 					}
 				}
-			case <-time.After(time.Second):
-			}
-			if len(logs) > 0 {
-				svc := pm.Service()
 				n.writeLogs(svc.Realm, svc.Name, logs...)
 				logs = logs[:0]
-			}
-			if !ok {
-				return
+
+			case <-tick.C:
 			}
 		}
 	}()
 
 	go func() {
 		for e := range pm.ManagerLogs() {
-			n.messlogErr(e)
+			n.logErr(e)
 		}
 	}()
 }
 
 func (n *node) stopServices() {
+
 	pms := make([]*proc.Manager, 0)
 	for _, sm := range *n.localServices.Load() {
 		for _, pm := range sm {
 			pms = append(pms, pm)
 		}
 	}
+
 	slices.SortFunc(pms, func(a, b *proc.Manager) int {
 		aOrder, bOrder := a.CurrentOrder(), b.CurrentOrder()
 		if aOrder > bOrder {
@@ -464,11 +477,16 @@ func (n *node) stopServices() {
 		}
 		return 0
 	})
+
 	for _, pm := range pms {
 		wasRunning := !pm.Running()
+
+		s := pm.Service()
+		log.Printf("closing process manager for %v@%v...\n", s.Name, s.Realm)
+
 		if err := pm.Shutdown(0); err != nil {
 			if wasRunning {
-				n.messlogf("shutting down %v: %v", pm.Service().Name, err)
+				n.logf("shutting down %v: %v", pm.Service().Name, err)
 			}
 		}
 	}
@@ -476,8 +494,10 @@ func (n *node) stopServices() {
 
 func (n *node) recalcRemoteServices() {
 	defer n.wg.Done()
+
 	for {
 		d := n.data.Load()
+
 		rm := make(rsMap)
 		for _, nd := range d.Map {
 			if time.Since(time.Unix(nd.LastSync, 0)) > 2*time.Minute {
@@ -495,6 +515,7 @@ func (n *node) recalcRemoteServices() {
 				}
 			}
 		}
+
 		for _, sm := range rm {
 			for _, recs := range sm {
 				slices.SortFunc(recs, d.Node.ProximitySort)
@@ -513,14 +534,18 @@ func (n *node) recalcRemoteServices() {
 
 func (n *node) getStatefullData() *mess.NodeData {
 	d := n.dataClone()
+
 	sm := *n.localServices.Load()
+
 	d.Node.CertExpires = n.cert.Load().Leaf.NotAfter.Unix()
+
 	for _, s := range d.Node.Services {
 		if pm := sm.get(s); pm != nil {
 			s.Active = pm.Running()
 			s.Passive = pm.Passive()
 		}
 	}
+
 	return d
 }
 
@@ -535,10 +560,12 @@ func (n *node) upgrade(bindata []byte) error {
 	if len(bindata) < 1<<20 {
 		return fmt.Errorf("file too small: %v", len(bindata))
 	}
+
 	binName, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("failed to get executable name: %w", err)
 	}
+
 	tmpName := binName + ".temp"
 	f, err := os.OpenFile(tmpName, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0700)
 	if err != nil {
@@ -552,12 +579,15 @@ func (n *node) upgrade(bindata []byte) error {
 	} else if l != len(bindata) {
 		return fmt.Errorf("bytes written (%v) != bytes sent (%v)", l, len(bindata))
 	}
+
 	if err = f.Close(); err != nil {
 		return fmt.Errorf("close: %w", err)
 	}
+
 	if err = os.Rename(tmpName, binName); err != nil {
 		return fmt.Errorf("rename: %w", err)
 	}
+
 	return nil
 }
 
@@ -581,7 +611,9 @@ func (n *node) deleteService(s *mess.Service) error {
 		}
 		x = append(x, rec)
 	}
+
 	d.Node.Services = x
+
 	if err := n.storeData(d); err != nil {
 		return err
 	}
@@ -596,17 +628,17 @@ func (n *node) deleteService(s *mess.Service) error {
 		if !ok {
 			return
 		}
-		bolt, ok := v.(*bbolt.DB)
+		rose, ok := v.(*rosedb.DB)
 		if !ok {
-			n.messlogf("error deleting logs: sync.Map value is not *bbolt.DB")
+			n.logf("error deleting logs: sync.Map value is not *rosedb.DB")
 			return
 		}
-		filename := bolt.Path()
-		if e := bolt.Close(); e != nil {
-			n.messlogf("error closing logs db %v: %v", filename, e)
+		filename := filepath.Join(n.logdir, s.Realm, s.Name)
+		if e := rose.Close(); e != nil {
+			n.logf("error closing logs db %v: %v", filename, e)
 		}
-		if e := os.Remove(filename); e != nil {
-			n.messlogf("error deleting logs db %v: %v", filename, e)
+		if e := os.RemoveAll(filename); e != nil {
+			n.logf("error deleting logs db %v: %v", filename, e)
 		}
 	}()
 	return nil
@@ -640,6 +672,7 @@ func (n *node) loadDevData() error {
 		},
 		Map: nil,
 	}
+	n.id = ndata.Node.ID
 	n.data.Store(ndata)
 	return nil
 }
@@ -655,9 +688,6 @@ func (n *node) loadData() error {
 	if ndata.Bind != "" {
 		ndata.Node.Bind = ndata.Bind
 	}
-	// if ndata.Node.ID == 0 && !n.dev {
-	// 	return fmt.Errorf("node id is missing")
-	// }
 	n.id = ndata.Node.ID
 	n.data.Store(ndata)
 	return nil
@@ -676,9 +706,9 @@ func (n *node) rebuildAliasMap() {
 	if mptr == nil {
 		return
 	}
-	rm := *mptr
+
 	am := make(lsAliasMap)
-	for realm, services := range rm {
+	for realm, services := range *mptr {
 		for _, pm := range services {
 			if !pm.Running() || pm.Stopped() {
 				continue

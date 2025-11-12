@@ -300,22 +300,30 @@ func (n *node) setupLocalServer() (stopfn func(), errch chan error, err error) {
 */
 
 func (n *node) setupPublicServer() (stopfn func(), errch chan error, err error) {
+
 	addr := fmt.Sprintf("%v:%v", n.data.Load().Bind, mess.PublicPort)
+
 	publicListener, lerr := net.Listen("tcp", addr)
 	if lerr != nil {
 		return nil, nil, fmt.Errorf("listen tcp %v: %w", addr, err)
 	}
 
-	publicServer := &http.Server{
-		Handler: http.HandlerFunc(n.publicHandler),
-		TLSConfig: &tls.Config{
+	var tlsConfig *tls.Config
+
+	if !n.dev {
+		tlsConfig = &tls.Config{
 			ClientCAs:             n.pool,
 			GetCertificate:        n.getCert,
 			VerifyPeerCertificate: n.verifyPeerCert,
 			ClientAuth:            tls.RequireAndVerifyClientCert,
 			MinVersion:            tls.VersionTLS13,
-		},
-		ErrorLog: log.New(io.Discard, "", 0),
+		}
+	}
+
+	publicServer := &http.Server{
+		Handler:   http.HandlerFunc(n.publicHandler),
+		TLSConfig: tlsConfig,
+		ErrorLog:  log.New(io.Discard, "", 0),
 	}
 
 	stopfn = func() {
@@ -323,18 +331,24 @@ func (n *node) setupPublicServer() (stopfn func(), errch chan error, err error) 
 		// defer cancel()
 		log.Println("stopping public server...")
 		if e := publicServer.Shutdown(context.Background()); e != nil {
-			n.messlogf("public server shutdown error: %v", e)
+			n.logf("public server shutdown error: %v", e)
 			// log.Printf("public server shutdown error: %v\n", e)
 		}
 	}
 
 	errch = make(chan error, 1)
-	go func() {
+	go func(dev bool) {
 		defer close(errch)
-		if e := publicServer.ServeTLS(publicListener, "", ""); e != nil && !errors.Is(e, http.ErrServerClosed) {
-			errch <- e
+		if dev {
+			if e := publicServer.Serve(publicListener); e != nil && !errors.Is(e, http.ErrServerClosed) {
+				errch <- e
+			}
+		} else {
+			if e := publicServer.ServeTLS(publicListener, "", ""); e != nil && !errors.Is(e, http.ErrServerClosed) {
+				errch <- e
+			}
 		}
-	}()
+	}(n.dev)
 	return
 }
 

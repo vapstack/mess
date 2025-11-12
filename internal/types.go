@@ -24,6 +24,6 @@ type (
 	}
 
 	LogsResponse struct {
-		Logs []*mess.LogRecord `json:"logs"`
+		Logs []mess.LogRecord `json:"logs"`
 	}
 )
