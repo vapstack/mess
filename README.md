@@ -1,2 +1,3 @@
 # mess
-Process manager, service mesh, event bus
+Early prototype of the process manager, service mesh, and event bus
+
