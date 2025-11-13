@@ -70,7 +70,7 @@ func main() {
 
 	if n.dev {
 		log.Println("running in dev mode")
-		if err = n.loadDevData(); err != nil {
+		if err = n.loadDevState(); err != nil {
 			log.Println("fatal:", err)
 			return
 		}
@@ -80,7 +80,7 @@ func main() {
 			log.Println("fatal:", err)
 			return
 		}
-		if err = n.loadData(); err != nil {
+		if err = n.loadState(); err != nil {
 			log.Println("fatal:", err)
 			return
 		}
@@ -207,9 +207,9 @@ type node struct {
 	dev    bool
 	seq    *seqgen
 
-	data atomic.Pointer[mess.NodeData]
-	cert atomic.Pointer[tls.Certificate]
-	pool *x509.CertPool
+	state atomic.Pointer[mess.NodeState]
+	cert  atomic.Pointer[tls.Certificate]
+	pool  *x509.CertPool
 
 	mu sync.Mutex // single-flight for API methods
 
@@ -350,7 +350,7 @@ func (n *node) runServices() {
 
 	n.localServices.Store(&lsMap{})
 
-	services := append(make(mess.Services, 0), n.data.Load().Node.Services...)
+	services := append(make(mess.Services, 0), n.state.Load().Node.Services...)
 	slices.SortStableFunc(services, func(a, b *mess.Service) int {
 		if a.Order > b.Order {
 			return 1
@@ -496,7 +496,7 @@ func (n *node) recalcRemoteServices() {
 	defer n.wg.Done()
 
 	for {
-		d := n.data.Load()
+		d := n.state.Load()
 
 		rm := make(rsMap)
 		for _, nd := range d.Map {
@@ -518,7 +518,7 @@ func (n *node) recalcRemoteServices() {
 
 		for _, sm := range rm {
 			for _, recs := range sm {
-				slices.SortFunc(recs, d.Node.ProximitySort)
+				slices.SortStableFunc(recs, d.Node.ProximitySort)
 			}
 		}
 
@@ -532,21 +532,21 @@ func (n *node) recalcRemoteServices() {
 	}
 }
 
-func (n *node) getStatefullData() *mess.NodeData {
-	d := n.dataClone()
+func (n *node) getStatefullData() *mess.NodeState {
+	state := n.stateClone()
 
 	sm := *n.localServices.Load()
 
-	d.Node.CertExpires = n.cert.Load().Leaf.NotAfter.Unix()
+	state.Node.CertExpires = n.cert.Load().Leaf.NotAfter.Unix()
 
-	for _, s := range d.Node.Services {
+	for _, s := range state.Node.Services {
 		if pm := sm.get(s); pm != nil {
 			s.Active = pm.Running()
 			s.Passive = pm.Passive()
 		}
 	}
 
-	return d
+	return state
 }
 
 func (n *node) close() error {
@@ -592,18 +592,18 @@ func (n *node) upgrade(bindata []byte) error {
 }
 
 func (n *node) updateService(s *mess.Service) error {
-	d := n.dataClone()
+	d := n.stateClone()
 	for i, rec := range d.Node.Services {
 		if rec.Name == s.Name {
 			d.Node.Services[i] = s
 			break
 		}
 	}
-	return n.storeData(d)
+	return n.storeState(d)
 }
 
 func (n *node) deleteService(s *mess.Service) error {
-	d := n.dataClone()
+	d := n.stateClone()
 	x := make(mess.Services, 0, len(d.Node.Services))
 	for _, rec := range d.Node.Services {
 		if rec.Name == s.Name && rec.Realm == s.Realm {
@@ -614,7 +614,7 @@ func (n *node) deleteService(s *mess.Service) error {
 
 	d.Node.Services = x
 
-	if err := n.storeData(d); err != nil {
+	if err := n.storeState(d); err != nil {
 		return err
 	}
 
@@ -648,25 +648,24 @@ func (n *node) deleteService(s *mess.Service) error {
 	return nil
 }
 
-func (n *node) dataClone() *mess.NodeData {
-	return n.data.Load().Clone()
+func (n *node) stateClone() *mess.NodeState {
+	return n.state.Load().Clone()
 }
 
-func (n *node) storeData(d *mess.NodeData) error {
+func (n *node) storeState(d *mess.NodeState) error {
 	if err := internal.WriteObject("node.json", d); err != nil {
 		return err
 	}
-	n.data.Store(d)
+	n.state.Store(d)
 	return nil
 }
 
-func (n *node) loadDevData() error {
+func (n *node) loadDevState() error {
 	services, err := internal.LoadObject[mess.Services]("node.dev.json")
 	if err != nil {
 		return fmt.Errorf("reading node.json: %w", err)
 	}
-	ndata := &mess.NodeData{
-		Bind: "",
+	state := &mess.NodeState{
 		Node: &mess.Node{
 			ID:         1,
 			Region:     "dev",
@@ -676,24 +675,21 @@ func (n *node) loadDevData() error {
 		},
 		Map: nil,
 	}
-	n.id = ndata.Node.ID
-	n.data.Store(ndata)
+	n.id = state.Node.ID
+	n.state.Store(state)
 	return nil
 }
 
-func (n *node) loadData() error {
-	ndata, err := internal.LoadObject[mess.NodeData]("node.json")
+func (n *node) loadState() error {
+	state, err := internal.LoadObject[mess.NodeState]("node.json")
 	if err != nil {
 		return fmt.Errorf("reading node.json: %w", err)
 	}
-	if ndata.Node == nil || ndata.Node.ID == 0 {
-		return fmt.Errorf("node data is missing or incomplete")
+	if state.Node == nil || state.Node.ID == 0 {
+		return fmt.Errorf("node state is missing or incomplete")
 	}
-	if ndata.Bind != "" {
-		ndata.Node.Bind = ndata.Bind
-	}
-	n.id = ndata.Node.ID
-	n.data.Store(ndata)
+	n.id = state.Node.ID
+	n.state.Store(state)
 	return nil
 }
 

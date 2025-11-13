@@ -27,22 +27,6 @@ func NewCustomClient(realm string, node uint64, service string) *http.Client {
 
 var DefaultClient = NewClient()
 
-// func (c *Client) WriteStream(ctx context.Context, streamName string, messageData []byte) error {
-// 	panic("not implemented")
-// }
-//
-// func (c *Client) ReadStream(ctx context.Context, streamName string, offset, limit uint64) ([]StreamRecord, error) {
-// 	panic("not implemented")
-// }
-//
-// func (c *Client) TruncateStream(ctx context.Context, streamName string, offset, limit uint64) ([]StreamRecord, error) {
-// 	panic("not implemented")
-// }
-//
-// func (c *Client) ExtractStream(ctx context.Context, streamName string, offset, limit uint64) ([]StreamRecord, error) {
-// 	panic("not implemented")
-// }
-
 /**/
 
 var bufpool = sync.Pool{

@@ -2,14 +2,13 @@ package mess
 
 import (
 	"errors"
+	"slices"
 	"strings"
 )
 
 const PublicPort = 2701
 
-// const DevPort = 4003
-
-const MessService = "mess"
+const NodeService = "mess"
 
 const (
 	TargetNodeHeader    = "X-Mess-Target-Node"
@@ -28,7 +27,7 @@ var (
 )
 
 type Node struct {
-	ID          uint64   `json:"id"` // unique identifier
+	ID          uint64   `json:"id"`
 	Region      string   `json:"region"`
 	Country     string   `json:"country"`
 	Datacenter  string   `json:"datacenter"`
@@ -67,18 +66,23 @@ type LogRecord struct {
 	Data []byte `json:"data"`
 }
 
-type NodeData struct {
-	Bind string `json:"bind,omitempty"`
-	Node *Node  `json:"node,omitempty"`
-	Map  Map    `json:"map"`
+type NodeState struct {
+	Node *Node `json:"node,omitempty"`
+	Map  Map   `json:"map"`
 }
 
-func (nd *NodeData) Clone() *NodeData {
-	x := &NodeData{
+func (nd *NodeState) Clone() *NodeState {
+	x := &NodeState{
 		Node: nd.Node.Clone(),
 		Map:  nd.Map.Clone(),
 	}
 	return x
+}
+
+// NodesByProximity returns a slice of nodes ordered by proximity (closest to farthest).
+// If NodeState does not hold a valid Node, NodesByProximity returns nil.
+func (nd *NodeState) NodesByProximity() []*Node {
+	return nd.Map.NodesByProximityTo(nd.Node)
 }
 
 func (s *Service) Clone() *Service {
@@ -247,6 +251,20 @@ func (n *Node) Clone() *Node {
 }
 
 type Map map[uint64]*Node
+
+// NodesByProximityTo returns a slice of nodes ordered by proximity to n.
+// If n is nil, NodesByProximityTo returns nil.
+func (nm Map) NodesByProximityTo(n *Node) []*Node {
+	if n == nil {
+		return nil
+	}
+	nodes := make([]*Node, 0, len(nm))
+	for _, node := range nm {
+		nodes = append(nodes, node)
+	}
+	slices.SortStableFunc(nodes, n.ProximitySort)
+	return nodes
+}
 
 func (nm Map) Clone() Map {
 	x := make(Map)

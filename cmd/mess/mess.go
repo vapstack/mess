@@ -44,7 +44,7 @@ func main() {
 
 	/**/
 
-	m.data = &messData{
+	m.state = &messState{
 		Map: make(mess.Map),
 	}
 	if _, err = os.Stat(m.messFile); err != nil {
@@ -52,10 +52,10 @@ func main() {
 			log.Fatalln("fatal:", err)
 		}
 		if err = m.saveMess(); err != nil {
-			log.Fatalln("fatal: saving mess data:", err)
+			log.Fatalln("fatal: saving mess state:", err)
 		}
 	} else {
-		if err = internal.ReadObject(m.messFile, &m.data); err != nil {
+		if err = internal.ReadObject(m.messFile, &m.state); err != nil {
 			log.Fatalln("fatal: reading mess nodes:", err)
 		}
 	}
@@ -137,7 +137,7 @@ func main() {
 					if e != nil || nid == 0 {
 						return mess.ErrInvalidNode
 					}
-					if len(cert.Subject.Organization) == 0 || cert.Subject.Organization[0] != mess.MessService {
+					if len(cert.Subject.Organization) == 0 || cert.Subject.Organization[0] != mess.NodeService {
 						return fmt.Errorf("invalid")
 					}
 					_, e = cert.Verify(tlsVerifyOptions)
@@ -166,7 +166,7 @@ type command struct {
 	ctx    context.Context
 }
 
-type messData struct {
+type messState struct {
 	RequireRealm bool     `json:"requireRealm"`
 	Map          mess.Map `json:"map"`
 	LastID       uint64   `json:"lastNode"`
@@ -175,18 +175,18 @@ type messData struct {
 type messConfig struct {
 	messFile string
 
-	key      any
 	keyBytes []byte
-	crt      *x509.Certificate
+	key      any
 	crtBytes []byte
+	crt      *x509.Certificate
 
-	data *messData
+	state *messState
 
 	rootMode bool
 }
 
 func (mc *messConfig) saveMess() error {
-	return internal.WriteObject(mc.messFile, mc.data)
+	return internal.WriteObject(mc.messFile, mc.state)
 }
 
 func (mc *messConfig) loadNodeCert() ([]byte, []byte, error) {
@@ -234,7 +234,7 @@ func (mc *messConfig) createNodeCert(nodeID uint64, days int) ([]byte, []byte, e
 		SerialNumber: serial,
 		Subject: pkix.Name{
 			CommonName:   strconv.FormatUint(nodeID, 10),
-			Organization: []string{mess.MessService},
+			Organization: []string{mess.NodeService},
 		},
 		NotBefore:   time.Now(),
 		NotAfter:    time.Now().AddDate(0, 0, days),
@@ -266,19 +266,19 @@ func (mc *messConfig) createNodeCert(nodeID uint64, days int) ([]byte, []byte, e
 /**/
 
 func (cmd *command) fetchMap(addr string) error {
-	res := new(mess.NodeData)
-	err := cmd.call(addr, "info", nil, res)
+	res := new(mess.NodeState)
+	err := cmd.call(addr, "state", nil, res)
 	if err != nil {
 		return err
 	}
 	if res.Node != nil {
 		res.Node.Addr = addr
 		res.Node.LastSync = time.Now().Unix()
-		cmd.mess.data.Map[res.Node.ID] = res.Node
+		cmd.mess.state.Map[res.Node.ID] = res.Node
 	}
 	for _, rec := range res.Map {
-		if _, exist := cmd.mess.data.Map[rec.ID]; !exist {
-			cmd.mess.data.Map[rec.ID] = rec
+		if _, exist := cmd.mess.state.Map[rec.ID]; !exist {
+			cmd.mess.state.Map[rec.ID] = rec
 		}
 	}
 	if err = cmd.mess.saveMess(); err != nil {
@@ -289,7 +289,7 @@ func (cmd *command) fetchMap(addr string) error {
 
 func (cmd *command) eachNodeProgress(fn func(rec *mess.Node) error) int {
 	ec := 0
-	for _, rec := range cmd.mess.data.Map {
+	for _, rec := range cmd.mess.state.Map {
 		ec += nodeProgress(rec).cover(func() error { return fn(rec) })
 	}
 	return ec
@@ -297,10 +297,10 @@ func (cmd *command) eachNodeProgress(fn func(rec *mess.Node) error) int {
 
 func (cmd *command) addr(node string) string {
 	nid, _ := strconv.ParseUint(node, 10, 64)
-	if rec, ok := cmd.mess.data.Map[nid]; ok {
+	if rec, ok := cmd.mess.state.Map[nid]; ok {
 		return rec.Address()
 	}
-	for _, rec := range cmd.mess.data.Map {
+	for _, rec := range cmd.mess.state.Map {
 		if addr := rec.Address(); addr == node {
 			return addr
 		}
@@ -310,10 +310,10 @@ func (cmd *command) addr(node string) string {
 
 func (cmd *command) nodeProgress(node string) *pprinter {
 	nid, _ := strconv.ParseUint(node, 10, 64)
-	if rec, ok := cmd.mess.data.Map[nid]; ok {
+	if rec, ok := cmd.mess.state.Map[nid]; ok {
 		return nodeProgress(rec)
 	}
-	for _, rec := range cmd.mess.data.Map {
+	for _, rec := range cmd.mess.state.Map {
 		if rec.Address() == node {
 			return nodeProgress(rec)
 		}
@@ -336,7 +336,7 @@ func (cmd *command) post(host, endpoint, query string, filename string) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set(mess.TargetServiceHeader, mess.MessService)
+	req.Header.Set(mess.TargetServiceHeader, mess.NodeService)
 
 	res, err := cmd.client.Do(req)
 	if err != nil {
@@ -380,7 +380,7 @@ func (cmd *command) calltype(ctype, host, endpoint string, data any, result any)
 		return err
 	}
 	req.Header.Set("Content-Type", "application/"+ctype)
-	req.Header.Set(mess.TargetServiceHeader, mess.MessService)
+	req.Header.Set(mess.TargetServiceHeader, mess.NodeService)
 
 	res, err := cmd.client.Do(req)
 	if err != nil {
@@ -481,7 +481,7 @@ func createCA(messKeyFile, messCrtFile string) error {
 
 	template := x509.Certificate{
 		SerialNumber:          serial,
-		Subject:               pkix.Name{Organization: []string{mess.MessService}},
+		Subject:               pkix.Name{Organization: []string{mess.NodeService}},
 		NotBefore:             time.Now(),
 		NotAfter:              time.Now().AddDate(100, 0, 0),
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,

@@ -56,7 +56,7 @@ func (n *node) verifyPeerCert(raw [][]byte, _ [][]*x509.Certificate) error {
 	if err != nil || nid == 0 {
 		return mess.ErrInvalidNode
 	}
-	if len(cert.Subject.Organization) == 0 || cert.Subject.Organization[0] != mess.MessService {
+	if len(cert.Subject.Organization) == 0 || cert.Subject.Organization[0] != mess.NodeService {
 		return fmt.Errorf("invalid")
 	}
 	_, err = cert.Verify(x509.VerifyOptions{Roots: n.pool})
@@ -83,7 +83,7 @@ func VerifyCertCA(pool *x509.CertPool, certPEM []byte) error {
 	if err != nil {
 		return err
 	}
-	if len(cert.Subject.Organization) == 0 || cert.Subject.Organization[0] != mess.MessService {
+	if len(cert.Subject.Organization) == 0 || cert.Subject.Organization[0] != mess.NodeService {
 		return fmt.Errorf("invalid")
 	}
 	if _, err = cert.Verify(x509.VerifyOptions{Roots: pool}); err != nil {

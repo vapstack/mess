@@ -67,7 +67,7 @@ func (n *node) localHandler(hw http.ResponseWriter, hr *http.Request) {
 
 	/*if n.dev {
 
-		if b.target.service == mess.MessService {
+		if b.target.service == mess.NodeService {
 			if r.Method == http.MethodPost {
 				if strings.Trim(r.URL.Path, "/") == "info" {
 					b.toLocal()
@@ -96,9 +96,9 @@ func (n *node) localHandler(hw http.ResponseWriter, hr *http.Request) {
 		ok bool
 	)
 
-	d := n.data.Load()
+	d := n.state.Load()
 
-	if b.Target.Service == mess.MessService {
+	if b.Target.Service == mess.NodeService {
 
 		if b.Target.NodeID == 0 || b.Target.NodeID == n.id {
 			b.ToLocal()
@@ -196,7 +196,7 @@ func (n *node) publicHandler(hw http.ResponseWriter, hr *http.Request) {
 		return
 	}
 
-	if b.Target.Service == mess.MessService {
+	if b.Target.Service == mess.NodeService {
 		b.ToLocal()
 		n.nodeHandler(w, r, strings.Split(strings.Trim(r.URL.Path, "/"), "/"))
 		return
@@ -301,7 +301,7 @@ func (n *node) setupLocalServer() (stopfn func(), errch chan error, err error) {
 
 func (n *node) setupPublicServer() (stopfn func(), errch chan error, err error) {
 
-	addr := fmt.Sprintf("%v:%v", n.data.Load().Bind, mess.PublicPort)
+	addr := fmt.Sprintf("%v:%v", n.state.Load().Node.Bind, mess.PublicPort)
 
 	publicListener, lerr := net.Listen("tcp", addr)
 	if lerr != nil {

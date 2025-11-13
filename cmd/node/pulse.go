@@ -26,7 +26,7 @@ func (n *node) pulsing() {
 				n.logf("pulse: encode: %v", e)
 				continue
 			}
-			for _, rec := range n.data.Load().Map {
+			for _, rec := range n.state.Load().Map {
 				if rec.ID > n.id || time.Since(time.Unix(rec.LastSync, 0)) > 2*time.Minute {
 					go n.pulse(rec, b.Bytes())
 				}
@@ -47,8 +47,8 @@ func (n *node) pulse(rec *mess.Node, data []byte) {
 	}
 
 	req.Header.Set("Content-Type", "application/gob")
-	req.Header.Set(mess.TargetServiceHeader, mess.MessService)
-	req.Header.Set(mess.CallerServiceHeader, mess.MessService)
+	req.Header.Set(mess.TargetServiceHeader, mess.NodeService)
+	req.Header.Set(mess.CallerServiceHeader, mess.NodeService)
 	req.Header.Set(mess.TargetNodeHeader, strconv.FormatUint(rec.ID, 10))
 	req.Header.Set(mess.CallerNodeHeader, strconv.FormatUint(n.id, 10))
 
@@ -74,7 +74,7 @@ func (n *node) pulse(rec *mess.Node, data []byte) {
 		return
 	}
 
-	v := new(mess.NodeData)
+	v := new(mess.NodeState)
 	if err = gob.NewDecoder(res.Body).Decode(v); err != nil {
 		n.logf("pulse: decoding body: %v", err)
 		return
@@ -84,11 +84,11 @@ func (n *node) pulse(rec *mess.Node, data []byte) {
 	}
 }
 
-func (n *node) applyPeerMap(req *mess.NodeData, remoteAddr string) (*mess.NodeData, error) {
+func (n *node) applyPeerMap(req *mess.NodeState, remoteAddr string) (*mess.NodeState, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	d := n.dataClone()
+	d := n.stateClone()
 
 	if req.Node != nil { // && !req.Node.Passive {
 		req.Node.Addr = remoteAddr
@@ -104,5 +104,5 @@ func (n *node) applyPeerMap(req *mess.NodeData, remoteAddr string) (*mess.NodeDa
 		}
 	}
 
-	return d, n.storeData(d)
+	return d, n.storeState(d)
 }

@@ -60,8 +60,8 @@ func cmdNew(cmd *command) (int, error) {
 
 	/**/
 
-	cmd.mess.data.LastID++
-	nodeID := cmd.mess.data.LastID
+	cmd.mess.state.LastID++
+	nodeID := cmd.mess.state.LastID
 
 	days := 365
 	if len(cmd.args) == 2 {
@@ -92,7 +92,7 @@ func cmdNew(cmd *command) (int, error) {
 			return 1, fmt.Errorf("failed to delete existing node.json: %w", err)
 		}
 	}
-	ndata := &mess.NodeData{
+	state := &mess.NodeState{
 		Node: &mess.Node{
 			ID:         nodeID,
 			Region:     strings.ToLower(loc[0]),
@@ -102,7 +102,7 @@ func cmdNew(cmd *command) (int, error) {
 		},
 		Map: make(mess.Map),
 	}
-	if err = internal.WriteObject("node.json", ndata); err != nil {
+	if err = internal.WriteObject("node.json", state); err != nil {
 		return 1, fmt.Errorf("write error: %w", err)
 	}
 
@@ -110,7 +110,7 @@ func cmdNew(cmd *command) (int, error) {
 		_ = os.Remove("node.json")
 		_ = os.Remove("node.key")
 		_ = os.Remove("node.crt")
-		return 1, fmt.Errorf("failed to update mess data: %w", err)
+		return 1, fmt.Errorf("failed to update mess state: %w", err)
 	}
 
 	return 0, nil
@@ -196,7 +196,7 @@ func cmdRotate(cmd *command) (int, error) {
 	})
 	if updated > 0 {
 		if err := cmd.mess.saveMess(); err != nil {
-			return 1, fmt.Errorf("updating mess data: %w", err)
+			return 1, fmt.Errorf("updating mess state: %w", err)
 		}
 	}
 	return ec, nil
@@ -212,7 +212,7 @@ func cmdGreet(cmd *command) (int, error) {
 		return 1, fmt.Errorf("cannot parse IP: %v", addr)
 	}
 	ec := pstartf(addr).cover(func() error {
-		if err := cmd.call(addr, "pulse", cmd.mess.data, nil); err != nil {
+		if err := cmd.call(addr, "pulse", cmd.mess.state, nil); err != nil {
 			return err
 		}
 		return cmd.fetchMap(addr)
@@ -231,11 +231,11 @@ func cmdSync(cmd *command) (int, error) {
 		}
 		return pstartf(addr).cover(func() error { return cmd.fetchMap(addr) }), nil
 	}
-	if len(cmd.mess.data.Map) == 0 {
+	if len(cmd.mess.state.Map) == 0 {
 		return 1, fmt.Errorf("no known nodes")
 	}
 	ec := 0
-	for _, rec := range cmd.mess.data.Map {
+	for _, rec := range cmd.mess.state.Map {
 		ec += nodeProgress(rec).cover(func() error { return cmd.fetchMap(rec.Address()) })
 	}
 	return ec, nil
@@ -247,7 +247,7 @@ func cmdMap(cmd *command) (int, error) {
 	}
 	if len(cmd.args) > 0 {
 		if cmd.args[0] == "json" {
-			b, err := json.MarshalIndent(cmd.mess.data, "", "    ")
+			b, err := json.MarshalIndent(cmd.mess.state, "", "    ")
 			if err != nil {
 				return 1, err
 			}
@@ -257,11 +257,11 @@ func cmdMap(cmd *command) (int, error) {
 			return 1, fmt.Errorf("unknown argument: %v", cmd.args[0])
 		}
 	}
-	if len(cmd.mess.data.Map) == 0 {
+	if len(cmd.mess.state.Map) == 0 {
 		return 1, fmt.Errorf("no known nodes")
 	}
-	recs := make([]*mess.Node, 0, len(cmd.mess.data.Map))
-	for _, rec := range cmd.mess.data.Map {
+	recs := make([]*mess.Node, 0, len(cmd.mess.state.Map))
+	for _, rec := range cmd.mess.state.Map {
 		recs = append(recs, rec)
 	}
 	slices.SortFunc(recs, func(a, b *mess.Node) int {
@@ -290,7 +290,7 @@ func cmdMap(cmd *command) (int, error) {
 				fmt.Printf("    %v - %v - %v\n", svc.Name, rtype, status)
 			}
 			if len(svc.Alias) > 0 {
-				fmt.Printf("    %v - %v - %v\n", svc.Name, rtype, status)
+				fmt.Printf("    [%v]\n", strings.Join(svc.Alias, ", "))
 			}
 		}
 	}
@@ -391,7 +391,7 @@ func cmdPut(cmd *command) (int, error) {
 	if err := internal.ReadObject(file, s); err != nil {
 		return 1, err
 	}
-	if cmd.mess.data.RequireRealm && s.Realm == "" {
+	if cmd.mess.state.RequireRealm && s.Realm == "" {
 		return 1, fmt.Errorf("realm is empty")
 	}
 	if s.Name == "" {
@@ -418,7 +418,7 @@ func cmdServiceCommand(cmd *command) (int, error) {
 	}
 	service, realm := internal.ParseServiceRealm(cmd.args[0])
 
-	if cmd.mess.data.RequireRealm && realm == "" {
+	if cmd.mess.state.RequireRealm && realm == "" {
 		return 1, fmt.Errorf("realm is empty")
 	}
 
@@ -460,7 +460,7 @@ func cmdDeploy(cmd *command) (int, error) {
 	deploy := cmd.name == "deploy"
 	file := cmd.args[0]
 	service, realm := internal.ParseServiceRealm(cmd.args[1])
-	if cmd.mess.data.RequireRealm && realm == "" {
+	if cmd.mess.state.RequireRealm && realm == "" {
 		return 1, fmt.Errorf("realm is empty")
 	}
 	node := "all"
