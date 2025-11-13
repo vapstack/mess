@@ -633,7 +633,11 @@ func (n *node) deleteService(s *mess.Service) error {
 			n.logf("error deleting logs: sync.Map value is not *rosedb.DB")
 			return
 		}
-		filename := filepath.Join(n.logdir, s.Realm, s.Name)
+		realm := s.Realm
+		if realm == "" {
+			realm = "default"
+		}
+		filename := filepath.Join(n.logdir, realm, s.Name)
 		if e := rose.Close(); e != nil {
 			n.logf("error closing logs db %v: %v", filename, e)
 		}

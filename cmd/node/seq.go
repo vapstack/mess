@@ -41,7 +41,7 @@ func (g *seqgen) next() uint64 {
 
 	now := time.Now().UnixMilli() - sfEpoch
 
-	for now < g.lastTimestamp {
+	for now < g.lastTimestamp { // clock ticked back (bad NTP sync or something)
 		time.Sleep(time.Millisecond)
 		now = time.Now().UnixMilli() - sfEpoch
 	}

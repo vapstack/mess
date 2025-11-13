@@ -27,6 +27,9 @@ func (n *node) logErr(err error) {
 
 func (n *node) openLog(realm, service string) (*rosedb.DB, error) {
 
+	if realm == "" {
+		realm = "default"
+	}
 	name := realm + "__" + service
 
 	if v, ok := n.logs.Load(name); ok {
@@ -148,8 +151,8 @@ func (n *node) readLogs(realm, service string, offset, limit uint64) ([]mess.Log
 
 	logs := make([]mess.LogRecord, 0, int(limit))
 
-	if limit > 5000 {
-		limit = 5000
+	if limit > 10_000 {
+		limit = 10_000
 	}
 
 	key := make([]byte, 8)

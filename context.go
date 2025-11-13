@@ -21,9 +21,9 @@ func addContextHeaders(ctx context.Context, h http.Header) {
 
 const ctxTargetNode ctxKey = "messTargetNode"
 
-// func withTargetNode(ctx context.Context, nodeID uint64) context.Context {
-// 	return context.WithValue(ctx, ctxTargetNode, nodeID)
-// }
+func WithTargetNode(ctx context.Context, nodeID uint64) context.Context {
+	return context.WithValue(ctx, ctxTargetNode, nodeID)
+}
 
 func targetNodeFromContext(ctx context.Context) (uint64, bool) {
 	s, ok := ctx.Value(ctxTargetNode).(uint64)
@@ -38,9 +38,9 @@ func targetNodeFromContext(ctx context.Context) (uint64, bool) {
 
 const ctxTargetRealm ctxKey = "messTargetRealm"
 
-// func withTargetRealm(ctx context.Context, realm string) context.Context {
-// 	return context.WithValue(ctx, ctxTargetRealm, realm)
-// }
+func WithTargetRealm(ctx context.Context, realm string) context.Context {
+	return context.WithValue(ctx, ctxTargetRealm, realm)
+}
 
 func targetRealmFromContext(ctx context.Context) (string, bool) {
 	s, ok := ctx.Value(ctxTargetRealm).(string)

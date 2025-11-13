@@ -543,7 +543,7 @@ func (pm *Manager) createServiceOutgoingProxy(svc *mess.Service) (string, error)
 		}
 
 	default:
-		network, addr, err = mess.ParseNetworkAddr(svc.Proxy)
+		network, addr, err = internal.ParseNetworkAddr(svc.Proxy)
 		if err != nil {
 			return "", fmt.Errorf("error parsing proxy string %v: %w", svc.Proxy, err)
 		}
@@ -590,7 +590,7 @@ func (pm *Manager) createServiceOutgoingProxy(svc *mess.Service) (string, error)
 }
 
 func createServiceIncomingProxy(svc *mess.Service, binpath string) (*httputil.ReverseProxy, error) {
-	network, addr, err := mess.ParseNetworkAddr(svc.Listen)
+	network, addr, err := internal.ParseNetworkAddr(svc.Listen)
 	if err != nil {
 		return nil, fmt.Errorf("invalid Listen: %w", err)
 	}

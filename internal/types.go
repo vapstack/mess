@@ -1,9 +1,5 @@
 package internal
 
-import (
-	"mess"
-)
-
 type (
 	RotateRequest struct {
 		Key string `json:"key"` // PEM
@@ -21,9 +17,5 @@ type (
 		Service string `json:"service"`
 		Offset  uint64 `json:"offset"`
 		Limit   uint64 `json:"limit"`
-	}
-
-	LogsResponse struct {
-		Logs []mess.LogRecord `json:"logs"`
 	}
 )

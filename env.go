@@ -1,6 +1,7 @@
 package mess
 
 import (
+	"mess/internal"
 	"os"
 	"strconv"
 	"strings"
@@ -66,5 +67,5 @@ func init() {
 
 	env.NodeID, _ = strconv.ParseUint(os.Getenv(EnvNode), 10, 64)
 
-	env.ProxyNetwork, env.ProxyAddr, _ = ParseNetworkAddr(env.Proxy)
+	env.ProxyNetwork, env.ProxyAddr, _ = internal.ParseNetworkAddr(env.Proxy)
 }

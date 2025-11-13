@@ -129,13 +129,16 @@ func init() {
 		"logs": func(n *node, w http.ResponseWriter, r *http.Request) {
 			defer readcover(w)()
 			req := requestValue(BodyTo[internal.LogsRequest](r))
-			res := (*internal.LogsResponse)(nil)
+			// res := []mess.LogRecord // (*internal.LogsResponse)(nil)
+			var logs []mess.LogRecord
 			if req.Service == mess.MessService {
-				res = &internal.LogsResponse{Logs: serverValue(n.readLogs(messLogName, messLogName, req.Offset, req.Limit))}
+				// res = &internal.LogsResponse{Logs: serverValue(n.readLogs(messLogName, messLogName, req.Offset, req.Limit))}
+				logs = serverValue(n.readLogs(messLogName, messLogName, req.Offset, req.Limit))
 			} else {
-				res = &internal.LogsResponse{Logs: serverValue(n.readLogs(req.Realm, req.Service, req.Offset, req.Limit))}
+				// res = &internal.LogsResponse{Logs: serverValue(n.readLogs(req.Realm, req.Service, req.Offset, req.Limit))}
+				logs = serverValue(n.readLogs(req.Realm, req.Service, req.Offset, req.Limit))
 			}
-			serverCheck(send(w, r, res))
+			serverCheck(send(w, r, logs))
 		},
 	}
 }

@@ -401,7 +401,7 @@ func cmdPut(cmd *command) (int, error) {
 		return 1, fmt.Errorf("start is empty")
 	}
 	if s.Listen != "" {
-		if _, _, err := mess.ParseNetworkAddr(s.Listen); err != nil {
+		if _, _, err := internal.ParseNetworkAddr(s.Listen); err != nil {
 			return 1, fmt.Errorf("invalid Listen: %w", err)
 		}
 	}
