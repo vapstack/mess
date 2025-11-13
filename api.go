@@ -12,99 +12,82 @@ import (
 	"strconv"
 )
 
-type SearchRequest struct {
-	Service string
-	Realm   string
-}
-
-func Info(ctx context.Context) (*NodeData, error) {
-	return api.Info(ctx)
-}
-func FindNodes(ctx context.Context, search string) ([]*Node, error) {
-	return api.Find(ctx, search)
-}
-func FindNodesIn(ctx context.Context, search, realm string) ([]*Node, error) {
-	return api.FindIn(ctx, search, realm)
-}
-func Closest(ctx context.Context, service string) (*Service, error) {
-	return api.Closest(ctx, service)
-}
-func ClosestIn(ctx context.Context, service, realm string) (*Service, error) {
-	return api.ClosestIn(ctx, service, realm)
+func State(ctx context.Context) (*NodeState, error) {
+	return api.State(ctx)
 }
 
 type API struct{ *http.Client }
 
 var api = API{NewClient()}
 
-func (a API) Info(ctx context.Context) (*NodeData, error) {
-	nd := new(NodeData)
-	return nd, a.send(ctx, "/info", nil, nd)
+func (a API) State(ctx context.Context) (*NodeState, error) {
+	nd := new(NodeState)
+	return nd, a.send(ctx, "/state", nil, nd)
 }
 
-func (a API) Find(ctx context.Context, search string) ([]*Node, error) {
-	return a.FindIn(ctx, search, env.Realm)
-}
-
-func (a API) FindIn(ctx context.Context, search, realm string) ([]*Node, error) {
-	var nodes []*Node
-	nd := new(NodeData)
-	if err := a.send(ctx, "/info", nil, nd); err != nil {
-		return nil, err
-	}
-	if nd.Node.Services.HasIn(search, realm) {
-		nodes = append(nodes, nd.Node)
-	}
-	for _, n := range nd.Map {
-		if n.Services.HasIn(search, realm) {
-			nodes = append(nodes, n)
-		}
-	}
-	slices.SortFunc(nodes, nd.Node.ProximitySort)
-	return nodes, nil
-}
-
-func (a API) Closest(ctx context.Context, service string) (*Service, error) {
-	nd := new(NodeData)
-	if err := a.send(ctx, "/info", nil, nd); err != nil {
-		return nil, err
-	}
-	if svc := nd.Node.Services.Get(service); svc != nil {
-		return svc, nil
-	}
-	nodes := make([]*Node, 0)
-	for _, n := range nd.Map {
-		if n.Has(service) {
-			nodes = append(nodes, n)
-		}
-	}
-	if len(nodes) == 0 {
-		return nil, nil
-	}
-	slices.SortFunc(nodes, nd.Node.ProximitySort)
-	return nodes[0].Get(service), nil
-}
-
-func (a API) ClosestIn(ctx context.Context, realm, service string) (*Service, error) {
-	nd := new(NodeData)
-	if err := a.send(ctx, "/info", nil, nd); err != nil {
-		return nil, err
-	}
-	if svc := nd.Node.Services.GetIn(service, realm); svc != nil {
-		return svc, nil
-	}
-	nodes := make([]*Node, 0)
-	for _, n := range nd.Map {
-		if n.HasIn(service, realm) {
-			nodes = append(nodes, n)
-		}
-	}
-	if len(nodes) == 0 {
-		return nil, nil
-	}
-	slices.SortFunc(nodes, nd.Node.ProximitySort)
-	return nodes[0].Get(service), nil
-}
+// func (a API) Find(ctx context.Context, search string) ([]*Node, error) {
+// 	return a.FindIn(ctx, search, env.Realm)
+// }
+//
+// func (a API) FindIn(ctx context.Context, search, realm string) ([]*Node, error) {
+// 	var nodes []*Node
+// 	nd := new(NodeState)
+// 	if err := a.send(ctx, "/info", nil, nd); err != nil {
+// 		return nil, err
+// 	}
+// 	if nd.Node.Services.HasIn(search, realm) {
+// 		nodes = append(nodes, nd.Node)
+// 	}
+// 	for _, n := range nd.Map {
+// 		if n.Services.HasIn(search, realm) {
+// 			nodes = append(nodes, n)
+// 		}
+// 	}
+// 	slices.SortStableFunc(nodes, nd.Node.ProximitySort)
+// 	return nodes, nil
+// }
+//
+// func (a API) Closest(ctx context.Context, service string) (*Service, error) {
+// 	nd := new(NodeState)
+// 	if err := a.send(ctx, "/info", nil, nd); err != nil {
+// 		return nil, err
+// 	}
+// 	if svc := nd.Node.Services.Get(service); svc != nil {
+// 		return svc, nil
+// 	}
+// 	nodes := make([]*Node, 0)
+// 	for _, n := range nd.Map {
+// 		if n.Has(service) {
+// 			nodes = append(nodes, n)
+// 		}
+// 	}
+// 	if len(nodes) == 0 {
+// 		return nil, nil
+// 	}
+// 	slices.SortStableFunc(nodes, nd.Node.ProximitySort)
+// 	return nodes[0].Get(service), nil
+// }
+//
+// func (a API) ClosestIn(ctx context.Context, realm, service string) (*Service, error) {
+// 	nd := new(NodeState)
+// 	if err := a.send(ctx, "/info", nil, nd); err != nil {
+// 		return nil, err
+// 	}
+// 	if svc := nd.Node.Services.GetIn(service, realm); svc != nil {
+// 		return svc, nil
+// 	}
+// 	nodes := make([]*Node, 0)
+// 	for _, n := range nd.Map {
+// 		if n.HasIn(service, realm) {
+// 			nodes = append(nodes, n)
+// 		}
+// 	}
+// 	if len(nodes) == 0 {
+// 		return nil, nil
+// 	}
+// 	slices.SortStableFunc(nodes, nd.Node.ProximitySort)
+// 	return nodes[0].Get(service), nil
+// }
 
 func (a API) MustPublish(events ...*Event) {
 	err := a.send(context.Background(), "/publish", events, nil)
@@ -182,7 +165,7 @@ func (a API) send(ctx context.Context, endpoint string, request, response any) e
 func newRequest(ctx context.Context, method string, body *bytes.Buffer) *http.Request {
 	req := defaultRequest.WithContext(ctx)
 
-	*req.URL = url.URL{
+	req.URL = &url.URL{
 		Scheme: "http",
 		Host:   "mess",
 		Path:   method,
@@ -214,18 +197,5 @@ func newRequest(ctx context.Context, method string, body *bytes.Buffer) *http.Re
 }
 
 var defaultRequest = &http.Request{
-	URL: &url.URL{
-		Scheme:      "",
-		Opaque:      "",
-		User:        nil,
-		Host:        "",
-		Path:        "",
-		RawPath:     "",
-		OmitHost:    false,
-		ForceQuery:  false,
-		RawQuery:    "",
-		Fragment:    "",
-		RawFragment: "",
-	},
 	Method: http.MethodPost,
 }

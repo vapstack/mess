@@ -37,12 +37,12 @@ func init() {
 
 		"pulse": func(n *node, w http.ResponseWriter, r *http.Request) {
 			if gobOnly(w, r) {
-				d := requestValue(BodyTo[mess.NodeData](r))
+				d := requestValue(BodyTo[mess.NodeState](r))
 				serverCheck(send(w, r, serverValue(n.applyPeerMap(d, r.RemoteAddr))))
 			}
 		},
 
-		"info": func(n *node, w http.ResponseWriter, r *http.Request) {
+		"state": func(n *node, w http.ResponseWriter, r *http.Request) {
 			defer readcover(w)()
 			serverCheck(send(w, r, n.getStatefullData()))
 		},
@@ -66,7 +66,7 @@ func init() {
 		"put": func(n *node, w http.ResponseWriter, r *http.Request) {
 			defer cover(n, w)()
 			s := requestValue(BodyTo[mess.Service](r))
-			d := n.dataClone()
+			d := n.stateClone()
 			ls := *n.localServices.Load()
 			for _, svc := range d.Node.Services {
 				if svc.Name == s.Name && svc.Realm == s.Realm {
@@ -80,7 +80,7 @@ func init() {
 			}
 			d.Node.Services = append(d.Node.Services, s)
 			serverCheck(n.runService(s))
-			serverCheck(n.storeData(d))
+			serverCheck(n.storeState(d))
 		},
 
 		"start": func(n *node, w http.ResponseWriter, r *http.Request) {
@@ -131,7 +131,7 @@ func init() {
 			req := requestValue(BodyTo[internal.LogsRequest](r))
 			// res := []mess.LogRecord // (*internal.LogsResponse)(nil)
 			var logs []mess.LogRecord
-			if req.Service == mess.MessService {
+			if req.Service == mess.NodeService {
 				// res = &internal.LogsResponse{Logs: serverValue(n.readLogs(messLogName, messLogName, req.Offset, req.Limit))}
 				logs = serverValue(n.readLogs(messLogName, messLogName, req.Offset, req.Limit))
 			} else {
@@ -139,6 +139,17 @@ func init() {
 				logs = serverValue(n.readLogs(req.Realm, req.Service, req.Offset, req.Limit))
 			}
 			serverCheck(send(w, r, logs))
+		},
+
+		"publish": func(n *node, w http.ResponseWriter, r *http.Request) {
+			defer readcover(w)()
+			// req := requestValue(BodyTo[internal.LogsRequest](r))
+		},
+		"subscribe": func(n *node, w http.ResponseWriter, r *http.Request) {
+
+		},
+		"cursor": func(n *node, w http.ResponseWriter, r *http.Request) {
+
 		},
 	}
 }

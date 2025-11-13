@@ -66,33 +66,73 @@ type LogRecord struct {
 	Data []byte `json:"data"`
 }
 
+/**/
+
 type NodeState struct {
 	Node *Node `json:"node,omitempty"`
 	Map  Map   `json:"map"`
 }
 
-func (nd *NodeState) Clone() *NodeState {
+func (ns *NodeState) Clone() *NodeState {
 	x := &NodeState{
-		Node: nd.Node.Clone(),
-		Map:  nd.Map.Clone(),
+		Node: ns.Node.Clone(),
+		Map:  ns.Map.Clone(),
 	}
 	return x
 }
 
-// NodesByProximity returns a slice of nodes ordered by proximity (closest to farthest).
-// If NodeState does not hold a valid Node, NodesByProximity returns nil.
-func (nd *NodeState) NodesByProximity() []*Node {
-	return nd.Map.NodesByProximityTo(nd.Node)
+func (ns *NodeState) GetNode(id uint64) *Node {
+	if ns.Node.ID == id {
+		return ns.Node
+	}
+	for nid, node := range ns.Map {
+		if nid == id {
+			return node
+		}
+	}
+	return nil
 }
+
+// Filter returns a NodeList holding nodes for which the provided fn returns true.
+// The resulting slice is ordered by proximity to the current node (closest to farthest).
+func (ns *NodeState) Filter(fn func(n *Node) bool) NodeList {
+	nodes := make([]*Node, 0, len(ns.Map)/2)
+	if fn(ns.Node) {
+		nodes = append(nodes, ns.Node)
+	}
+	for _, node := range ns.Map {
+		if fn(node) {
+			nodes = append(nodes, node)
+		}
+	}
+	return nodes
+}
+
+// NodesByProximity returns a NodeList ordered by proximity to the current node (closest to farthest).
+// If NodeState does not hold a valid Node, nil is returned.
+func (ns *NodeState) NodesByProximity() NodeList {
+	return ns.Map.NodesByProximityTo(ns.Node)
+}
+
+/**/
 
 func (s *Service) Clone() *Service {
 	x := new(Service)
 	*x = *s
-	x.Args = append(make([]string, 0, len(s.Args)), s.Args...)
-	x.Env = append(make([]string, 0, len(s.Env)), s.Env...)
-	x.Alias = append(make([]string, 0, len(s.Alias)), s.Alias...)
+	x.Args = slices.Clone(s.Args)   // append(make([]string, 0, len(s.Args)), s.Args...)
+	x.Env = slices.Clone(s.Env)     // append(make([]string, 0, len(s.Env)), s.Env...)
+	x.Alias = slices.Clone(s.Alias) // append(make([]string, 0, len(s.Alias)), s.Alias...)
+	x.Meta = nil
+	if len(s.Meta) > 0 {
+		x.Meta = make(map[string]string, len(s.Meta))
+		for k, v := range s.Meta {
+			x.Meta[k] = v
+		}
+	}
 	return x
 }
+
+/**/
 
 type Services []*Service
 
@@ -250,19 +290,51 @@ func (n *Node) Clone() *Node {
 	return x
 }
 
+/**/
+
+type NodeList []*Node
+
+// Filter returns a NodeList holding nodes for which the provided fn returns true.
+func (nl NodeList) Filter(fn func(n *Node) bool) NodeList {
+	nodes := make(NodeList, 0, len(nl)/2)
+	for _, node := range nl {
+		if fn(node) {
+			nodes = append(nodes, node)
+		}
+	}
+	return nodes
+}
+
+/**/
+
 type Map map[uint64]*Node
 
-// NodesByProximityTo returns a slice of nodes ordered by proximity to n.
+// NodesByProximityTo returns a NodeList ordered by proximity to n, including n itself as the first element.
 // If n is nil, NodesByProximityTo returns nil.
-func (nm Map) NodesByProximityTo(n *Node) []*Node {
-	if n == nil {
+func (nm Map) NodesByProximityTo(n *Node) NodeList {
+	if n == nil || len(nm) == 0 {
 		return nil
 	}
-	nodes := make([]*Node, 0, len(nm))
+	nodes := make(NodeList, 0, len(nm)+1)
+	nodes = append(nodes, n)
 	for _, node := range nm {
 		nodes = append(nodes, node)
 	}
 	slices.SortStableFunc(nodes, n.ProximitySort)
+	return nodes
+}
+
+// Filter returns a NodeList holding nodes for which the provided fn returns true.
+func (nm Map) Filter(fn func(n *Node) bool) NodeList {
+	if fn == nil || len(nm) == 0 {
+		return nil
+	}
+	nodes := make(NodeList, 0, len(nm)/2)
+	for _, node := range nm {
+		if fn(node) {
+			nodes = append(nodes, node)
+		}
+	}
 	return nodes
 }
 
