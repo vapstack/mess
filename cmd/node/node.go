@@ -2,13 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
 	"log"
-	"mess"
-	"mess/internal"
-	"mess/internal/proc"
 	"net/http"
 	"net/http/httputil"
 	"os"
@@ -16,13 +14,19 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/vapstack/mess"
+	"github.com/vapstack/mess/internal"
+	"github.com/vapstack/mess/internal/proc"
+
 	"github.com/rosedblabs/rosedb/v2"
+	"github.com/vapstack/monotime"
 )
 
 func main() {
@@ -36,6 +40,13 @@ func main() {
 
 	if _, err = os.Stat(filepath.Join(binPath, "mess.key")); err == nil {
 		log.Println("fatal: cannot start under the mess root")
+		return
+	}
+
+	dev := isDev()
+
+	if !dev && runtime.GOOS != "linux" {
+		log.Println("fatal: only linux is supported outside of dev mode")
 		return
 	}
 
@@ -56,17 +67,29 @@ func main() {
 		svcdir: filepath.Join(binPath, "svc"),
 		logdir: filepath.Join(binPath, "log"),
 		tmpdir: filepath.Join(binPath, "tmp"),
-		dev:    isDev(),
+		busdir: filepath.Join(binPath, "bus"),
+		dev:    dev,
+
+		// busdb: make(map[dkey]*dbi),
+		// logdb: make(map[dkey]*dbi),
 	}
 
-	if !n.dev && runtime.GOOS != "linux" {
-		log.Println("fatal: only linux is supported outside of dev mode")
+	if err = os.MkdirAll(n.tmpdir, 0700); err != nil {
+		log.Println("fatal:", err)
 		return
 	}
-
-	n.ctx, _ = signal.NotifyContext(context.Background(), os.Interrupt, os.Kill, syscall.SIGTERM, syscall.SIGHUP)
-
-	/**/
+	if err = os.MkdirAll(n.logdir, 0700); err != nil {
+		log.Println("fatal:", err)
+		return
+	}
+	if err = os.MkdirAll(n.svcdir, 0700); err != nil {
+		log.Println("fatal:", err)
+		return
+	}
+	if err = os.MkdirAll(n.busdir, 0700); err != nil {
+		log.Println("fatal:", err)
+		return
+	}
 
 	if n.dev {
 		log.Println("running in dev mode")
@@ -84,38 +107,38 @@ func main() {
 			log.Println("fatal:", err)
 			return
 		}
-		defer func() {
-			n.logs.Range(func(key, value any) bool {
-				db, ok := value.(*rosedb.DB)
-				if !ok {
-					log.Println("error closing logs: sync.Map value is not *rosedb.DB")
-				}
-				if e := db.Close(); e != nil {
-					log.Printf("error closing log db [%v]: %v", key, e)
-				}
-				return true
-			})
-		}()
+		// defer func() {
+		//
+		// }()
 	}
+	// defer func() {
+	//
+	// }()
+
+	// lgen := monotime.NewGen(filepath.Join(n.busdir, "log.last"))
+	// if err != nil {
+	// 	log.Println("fatal: error creating log sequence:", err)
+	// 	return
+	// }
+	// n.logids = monotime.NewGen(0)
+
+	bgen, err := newMonoBolt(int(n.id), filepath.Join(n.busdir, "last"))
+	if err != nil {
+		log.Println("fatal: error initializing bus sequence:", err)
+		return
+	}
+	n.busids = bgen
+	n.busTopics = new(topicTracker)
+
+	n.ctx, _ = signal.NotifyContext(context.Background(), os.Interrupt, os.Kill, syscall.SIGTERM, syscall.SIGHUP)
 
 	/**/
 
-	n.seq = newSeqGen(n.id)
-
 	/**/
 
-	if err = os.MkdirAll(n.tmpdir, 0700); err != nil {
-		log.Println("fatal:", err)
-		return
-	}
-	if err = os.MkdirAll(n.logdir, 0700); err != nil {
-		log.Println("fatal:", err)
-		return
-	}
-	if err = os.MkdirAll(n.svcdir, 0700); err != nil {
-		log.Println("fatal:", err)
-		return
-	}
+	// n.logseq = newSeqGen(n.id)
+
+	/**/
 
 	/**/
 
@@ -199,17 +222,21 @@ func main() {
 /**/
 
 type node struct {
-	id     uint64
-	path   string
+	id   uint64
+	path string
+
 	svcdir string
 	logdir string
 	tmpdir string
-	dev    bool
-	seq    *seqgen
+	busdir string
+
+	dev bool
 
 	state atomic.Pointer[mess.NodeState]
-	cert  atomic.Pointer[tls.Certificate]
-	pool  *x509.CertPool
+
+	cert atomic.Pointer[tls.Certificate]
+	pool *x509.CertPool
+	pubk ed25519.PublicKey
 
 	mu sync.Mutex // single-flight for API methods
 
@@ -217,17 +244,20 @@ type node struct {
 	localAliases   atomic.Pointer[lsAliasMap]
 	remoteServices atomic.Pointer[rsMap] // ordered by location proximity
 
-	rrCounter atomic.Uint64
-
 	client *http.Client
 	proxy  *httputil.ReverseProxy
 
-	logs sync.Map // map["realm_service"]*rosedb.DB
+	logmu sync.Mutex
+	logdb sync.Map
+
+	busmu  sync.Mutex
+	busdb  sync.Map
+	busids *monobolt
+
+	busTopics *topicTracker
 
 	ctx  context.Context
 	stop func()
-
-	// devmap map[string]*httputil.ReverseProxy
 
 	wg sync.WaitGroup
 }
@@ -313,8 +343,8 @@ func (m rsMap) add(realm, service string, node *mess.Node) {
 /**/
 
 type aliasRoundRobin struct {
-	rr  atomic.Uint64
-	pms []*proc.Manager
+	next atomic.Uint64
+	pms  []*proc.Manager
 }
 
 type lsAliasMap map[string]map[string]*aliasRoundRobin
@@ -336,6 +366,9 @@ func (n *node) start() error {
 	if !n.dev {
 		n.wg.Add(1)
 		go n.pulsing()
+
+		n.wg.Add(1)
+		go n.refreshBusTopics()
 	}
 
 	n.wg.Add(1)
@@ -484,11 +517,56 @@ func (n *node) stopServices() {
 		s := pm.Service()
 		log.Printf("closing process manager for %v@%v...\n", s.Name, s.Realm)
 
-		if err := pm.Shutdown(0); err != nil {
+		if err := pm.Shutdown(); err != nil {
 			if wasRunning {
-				n.logf("shutting down %v: %v", pm.Service().Name, err)
+				n.logf("shutting down %v@%v: %v", s.Name, s.Realm, err)
 			}
 		}
+	}
+}
+
+func (n *node) refreshBusTopics() {
+	defer n.wg.Done()
+
+	for {
+		select {
+		case <-n.ctx.Done():
+			return
+		case <-time.After(pulseInterval):
+			n.updateBusTopics()
+		}
+	}
+}
+
+func (n *node) updateBusTopics() {
+
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	d := n.stateClone()
+
+	if d.Node.Publish == nil {
+		d.Node.Publish = make(mess.PublishMap)
+	}
+	for _, tm := range d.Node.Publish {
+		for topic, uuid := range tm {
+			if time.Since(uuid.Time()) > eventTTL {
+				delete(tm, topic)
+			}
+		}
+	}
+
+	n.busTopics.each(func(realm, topic string, uuid monotime.UUID) {
+		tm, ok := d.Node.Publish[realm]
+		if !ok {
+			tm = make(map[string]monotime.UUID)
+			d.Node.Publish[realm] = tm
+		}
+		tm[topic] = uuid
+	})
+
+	if err := n.saveState(d); err != nil {
+		n.logf("failed to save state: %v", err)
 	}
 }
 
@@ -532,7 +610,7 @@ func (n *node) recalcRemoteServices() {
 	}
 }
 
-func (n *node) getStatefullData() *mess.NodeState {
+func (n *node) getState() *mess.NodeState {
 	state := n.stateClone()
 
 	sm := *n.localServices.Load()
@@ -546,52 +624,46 @@ func (n *node) getStatefullData() *mess.NodeState {
 		}
 	}
 
+	// n.busTopics.each(func(realm, topic string, t int64) bool {
+	//
+	// })
+
 	return state
 }
 
 func (n *node) close() error {
 	n.stop()
+
 	n.stopServices()
 	n.wg.Wait()
-	return nil
-}
 
-func (n *node) upgrade(bindata []byte) error {
-	if len(bindata) < 1<<20 {
-		return fmt.Errorf("file too small: %v", len(bindata))
+	n.busdb.Range(func(key, db any) bool {
+		k := key.(dkey)
+		if err := db.(*dbval).Close(); err != nil {
+			n.logf("error closing bus db for topic %v@%v: %v", k.name, k.realm, err)
+			// log.Printf("error closing bus db for topic %v@%v: %v", k.name, k.realm, e)
+		}
+		return true
+	})
+	if err := n.busids.close(); err != nil {
+		n.logf("error closing bus sequence: %v", err)
 	}
 
-	binName, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("failed to get executable name: %w", err)
-	}
-
-	tmpName := binName + ".temp"
-	f, err := os.OpenFile(tmpName, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0700)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = f.Close() }()
-
-	l, err := f.Write(bindata)
-	if err != nil {
-		return fmt.Errorf("write error: %w", err)
-	} else if l != len(bindata) {
-		return fmt.Errorf("bytes written (%v) != bytes sent (%v)", l, len(bindata))
-	}
-
-	if err = f.Close(); err != nil {
-		return fmt.Errorf("close: %w", err)
-	}
-
-	if err = os.Rename(tmpName, binName); err != nil {
-		return fmt.Errorf("rename: %w", err)
+	if !n.dev {
+		n.logdb.Range(func(key, db any) bool {
+			k := key.(dkey)
+			if e := db.(*dbval).Close(); e != nil {
+				log.Printf("error closing log db for %v@%v: %v", k.name, k.realm, e)
+			}
+			return true
+		})
 	}
 
 	return nil
 }
 
 func (n *node) updateService(s *mess.Service) error {
+	// lock acquired in handler
 	d := n.stateClone()
 	for i, rec := range d.Node.Services {
 		if rec.Name == s.Name {
@@ -599,10 +671,11 @@ func (n *node) updateService(s *mess.Service) error {
 			break
 		}
 	}
-	return n.storeState(d)
+	return n.saveState(d)
 }
 
 func (n *node) deleteService(s *mess.Service) error {
+	// lock acquired in handler
 	d := n.stateClone()
 	x := make(mess.Services, 0, len(d.Node.Services))
 	for _, rec := range d.Node.Services {
@@ -614,7 +687,7 @@ func (n *node) deleteService(s *mess.Service) error {
 
 	d.Node.Services = x
 
-	if err := n.storeState(d); err != nil {
+	if err := n.saveState(d); err != nil {
 		return err
 	}
 
@@ -622,29 +695,10 @@ func (n *node) deleteService(s *mess.Service) error {
 	rm.delete(s)
 	n.updateLocalServices(rm)
 
-	go func() {
-		<-time.After(time.Second)
-		v, ok := n.logs.Load(fmt.Sprintf("%v:%v", s.Realm, s.Name))
-		if !ok {
-			return
-		}
-		rose, ok := v.(*rosedb.DB)
-		if !ok {
-			n.logf("error deleting logs: sync.Map value is not *rosedb.DB")
-			return
-		}
-		realm := s.Realm
-		if realm == "" {
-			realm = "default"
-		}
-		filename := filepath.Join(n.logdir, realm, s.Name)
-		if e := rose.Close(); e != nil {
-			n.logf("error closing logs db %v: %v", filename, e)
-		}
-		if e := os.RemoveAll(filename); e != nil {
-			n.logf("error deleting logs db %v: %v", filename, e)
-		}
-	}()
+	if err := n.deleteLog(s.Realm, s.Name); err != nil {
+		n.logf("error deleting log db for %v@%v: %v", s.Name, s.Realm, err)
+	}
+
 	return nil
 }
 
@@ -652,7 +706,7 @@ func (n *node) stateClone() *mess.NodeState {
 	return n.state.Load().Clone()
 }
 
-func (n *node) storeState(d *mess.NodeState) error {
+func (n *node) saveState(d *mess.NodeState) error {
 	if err := internal.WriteObject("node.json", d); err != nil {
 		return err
 	}
@@ -686,7 +740,7 @@ func (n *node) loadState() error {
 		return fmt.Errorf("reading node.json: %w", err)
 	}
 	if state.Node == nil || state.Node.ID == 0 {
-		return fmt.Errorf("node state is missing or incomplete")
+		return fmt.Errorf("node state is missing, incomplete or misconfigured")
 	}
 	n.id = state.Node.ID
 	n.state.Store(state)
@@ -699,6 +753,11 @@ func (n *node) updateLocalServices(m lsMap) {
 }
 
 func (n *node) rebuildAliasMap() {
+	// will acquire lock when it becomes available
+	go n.rebuildAliasMapLocked()
+}
+
+func (n *node) rebuildAliasMapLocked() {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
@@ -717,16 +776,22 @@ func (n *node) rebuildAliasMap() {
 			if svc == nil || svc.Passive {
 				continue
 			}
+			sm, ok := am[realm]
+			if !ok {
+				sm = make(map[string]*aliasRoundRobin)
+				am[realm] = sm
+			}
+			rr, ok := sm[svc.Name]
+			if !ok {
+				rr = new(aliasRoundRobin)
+				sm[svc.Name] = rr
+			}
+			rr.pms = append(rr.pms, pm)
 			for _, alias := range svc.Alias {
 				if alias == "" {
 					continue
 				}
-				sm, ok := am[realm]
-				if !ok {
-					sm = make(map[string]*aliasRoundRobin)
-					am[realm] = sm
-				}
-				rr, ok := sm[alias]
+				rr, ok = sm[alias]
 				if !ok {
 					rr = new(aliasRoundRobin)
 					sm[alias] = rr
@@ -738,6 +803,10 @@ func (n *node) rebuildAliasMap() {
 	n.localAliases.Store(&am)
 }
 
+/**/
+
+type Producer[T any] func(context.Context, chan<- T)
+
 func isDev() bool {
 	var dev bool
 	for _, arg := range os.Args[1:] {
@@ -746,4 +815,44 @@ func isDev() bool {
 		}
 	}
 	return dev
+}
+
+func toCronMinute(s string) string {
+	var h int
+	for i := 0; i < len(s); i++ {
+		h += int(s[i])
+	}
+	return strconv.Itoa(h % 60)
+}
+
+type (
+	dkey struct {
+		realm string
+		name  string
+	}
+	dbval struct {
+		*rosedb.DB
+		seq *monotime.Gen
+	}
+)
+
+func loggedClose(f *os.File) {
+	n := f.Name()
+	if err := f.Close(); err != nil {
+		log.Printf("error closing %v: %v\n", n, err)
+	}
+}
+
+func silentClose(f *os.File) {
+	_ = f.Close()
+}
+
+func loggedRemove(name string) {
+	if err := os.Remove(name); err != nil {
+		log.Printf("error removing %v: %v\n", name, err)
+	}
+}
+
+func silentRemove(name string) {
+	_ = os.Remove(name)
 }

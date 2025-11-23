@@ -3,14 +3,15 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"mess"
-	"mess/internal"
 	"net"
 	"os"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/vapstack/mess"
+	"github.com/vapstack/mess/internal"
 )
 
 func runCommand(cmd *command) (int, error) {
@@ -26,8 +27,8 @@ func runCommand(cmd *command) (int, error) {
 		return cmdNew(cmd)
 	case "gen":
 		return cmdGen(cmd)
-	case "greet":
-		return cmdGreet(cmd)
+	case "add":
+		return cmdAdd(cmd)
 	case "rotate":
 		return cmdRotate(cmd)
 	case "upgrade":
@@ -100,7 +101,7 @@ func cmdNew(cmd *command) (int, error) {
 			Datacenter: strings.ToLower(loc[2]),
 			Services:   make([]*mess.Service, 0),
 		},
-		Map: make(mess.Map),
+		Map: make(mess.NodeMap),
 	}
 	if err = internal.WriteObject("node.json", state); err != nil {
 		return 1, fmt.Errorf("write error: %w", err)
@@ -157,32 +158,44 @@ func cmdRotate(cmd *command) (int, error) {
 		printCommandUsage(cmd.name, 0)
 		return 1, nil
 	}
+
 	if !cmd.mess.rootMode {
 		return 1, fmt.Errorf("no mess key found")
 	}
+
 	days := 365
+
 	if len(cmd.args) > 1 {
 		d, err := strconv.Atoi(cmd.args[1])
 		if err != nil {
 			return 1, fmt.Errorf("invalid cert lifetime: %w", err)
 		}
+		if d < 1 {
+			return 1, fmt.Errorf("invalid cert lifetime: %v", d)
+		}
 		days = d
 	}
+
 	var force bool
 	for _, arg := range cmd.args {
 		if force = strings.ToLower(arg) == "force"; force {
 			break
 		}
 	}
+
 	updated := 0
+
 	ec := cmd.eachNodeProgress(func(rec *mess.Node) error {
+
 		if !force && time.Unix(rec.CertExpires, 0).AddDate(0, 0, -days).After(time.Now()) {
 			return errSkip
 		}
+
 		keyPEM, crtPEM, e := cmd.mess.createNodeCert(rec.ID, days)
 		if e != nil {
 			return e
 		}
+
 		e = cmd.call(rec.Address(), "cert", internal.RotateRequest{
 			Key: string(keyPEM),
 			Crt: string(crtPEM),
@@ -190,38 +203,49 @@ func cmdRotate(cmd *command) (int, error) {
 		if e != nil {
 			return e
 		}
+
 		rec.CertExpires = time.Now().AddDate(1, 0, 0).Unix()
 		updated++
+
 		return nil
 	})
+
 	if updated > 0 {
 		if err := cmd.mess.saveMess(); err != nil {
 			return 1, fmt.Errorf("updating mess state: %w", err)
 		}
 	}
+
 	return ec, nil
 }
 
-func cmdGreet(cmd *command) (int, error) {
+func cmdAdd(cmd *command) (int, error) {
 	if len(cmd.args) != 1 {
 		printCommandUsage(cmd.name, 0)
 		return 1, nil
 	}
+
 	addr := cmd.args[0]
+
 	if net.ParseIP(addr) == nil {
 		return 1, fmt.Errorf("cannot parse IP: %v", addr)
 	}
+
 	ec := pstartf(addr).cover(func() error {
-		if err := cmd.call(addr, "pulse", cmd.mess.state, nil); err != nil {
+		state := new(mess.NodeState)
+		if err := cmd.call(addr, "pulse", cmd.mess.state, state); err != nil {
 			return err
 		}
-		return cmd.fetchMap(addr)
+		return cmd.applyState(state, addr)
 	})
+
 	return ec, nil
 }
 
 func cmdSync(cmd *command) (int, error) {
+
 	if len(cmd.args) > 0 {
+
 		if len(cmd.args) > 1 {
 			return 1, fmt.Errorf("too many arguments")
 		}
@@ -229,15 +253,18 @@ func cmdSync(cmd *command) (int, error) {
 		if net.ParseIP(addr) == nil {
 			return 1, fmt.Errorf("cannot parse IP: %v", addr)
 		}
-		return pstartf(addr).cover(func() error { return cmd.fetchMap(addr) }), nil
+		return pstartf(addr).cover(func() error {
+			return cmd.fetchState(addr)
+		}), nil
 	}
+
 	if len(cmd.mess.state.Map) == 0 {
 		return 1, fmt.Errorf("no known nodes")
 	}
-	ec := 0
-	for _, rec := range cmd.mess.state.Map {
-		ec += nodeProgress(rec).cover(func() error { return cmd.fetchMap(rec.Address()) })
-	}
+
+	ec := cmd.eachNodeProgress(func(rec *mess.Node) error {
+		return cmd.fetchState(rec.Address())
+	})
 	return ec, nil
 }
 
@@ -260,13 +287,16 @@ func cmdMap(cmd *command) (int, error) {
 	if len(cmd.mess.state.Map) == 0 {
 		return 1, fmt.Errorf("no known nodes")
 	}
+
 	recs := make([]*mess.Node, 0, len(cmd.mess.state.Map))
 	for _, rec := range cmd.mess.state.Map {
 		recs = append(recs, rec)
 	}
+
 	slices.SortFunc(recs, func(a, b *mess.Node) int {
 		return strings.Compare(a.Location(), b.Location())
 	})
+
 	for _, rec := range recs {
 		fmt.Printf("%-5v - %-15v - %v - crt/%v\n", rec.ID, rec.Address(), rec.Location(), time.Unix(rec.CertExpires, 0).Format("2006-01-02"))
 		for _, svc := range rec.Services {
@@ -364,16 +394,9 @@ func cmdShutdown(cmd *command) (int, error) {
 		return 1, nil
 	}
 	node := cmd.args[0]
-	ec := 0
-	if node != "all" {
-		ec = cmd.nodeProgress(node).cover(func() error {
-			return cmd.call(cmd.addr(node), "shutdown", nil, nil)
-		})
-	} else {
-		ec = cmd.eachNodeProgress(func(rec *mess.Node) error {
-			return cmd.call(rec.Address(), "shutdown", nil, nil)
-		})
-	}
+	ec := cmd.nodeProgress(node).cover(func() error {
+		return cmd.call(cmd.addr(node), "shutdown", nil, nil)
+	})
 	return ec, nil
 }
 
@@ -384,9 +407,11 @@ func cmdPut(cmd *command) (int, error) {
 	}
 	file := cmd.args[0]
 	node := cmd.args[1]
+
 	if _, err := os.Stat(file); err != nil {
 		return 1, err
 	}
+
 	s := new(mess.Service)
 	if err := internal.ReadObject(file, s); err != nil {
 		return 1, err
@@ -406,13 +431,14 @@ func cmdPut(cmd *command) (int, error) {
 		}
 	}
 	s.Active = false
+
 	return cmd.nodeProgress(node).cover(func() error {
 		return cmd.call(cmd.addr(node), "put", s, nil)
 	}), nil
 }
 
 func cmdServiceCommand(cmd *command) (int, error) {
-	if len(cmd.args) < 2 || len(cmd.args) > 3 {
+	if len(cmd.args) != 2 {
 		printCommandUsage(cmd.name, 0)
 		return 1, nil
 	}
@@ -423,64 +449,68 @@ func cmdServiceCommand(cmd *command) (int, error) {
 	}
 
 	node := cmd.args[1]
-	timeout := 0
-	if len(cmd.args) == 3 {
-		if v, _ := strconv.Atoi(cmd.args[2]); v > 0 {
-			timeout = v
-		}
-	}
 
-	sc := internal.ServiceCommand{
-		Realm:   realm,
-		Service: service,
-		Timeout: timeout,
-	}
+	ep := fmt.Sprintf("%v?service=%v&realm=%v", cmd.name, realm, service)
 
 	if node == "all" {
 		return cmd.eachNodeProgress(func(rec *mess.Node) error {
-			if e := cmd.call(rec.Address(), cmd.name, sc, nil); e != nil {
-				return e
-			}
-			return nil
+			return cmd.call(rec.Address(), ep, nil, nil)
 		}), nil
 	}
 	return cmd.nodeProgress(node).cover(func() error {
-		if e := cmd.call(cmd.addr(node), cmd.name, sc, nil); e != nil {
-			return e
-		}
-		return nil
+		return cmd.call(cmd.addr(node), ep, nil, nil)
 	}), nil
 }
 
 func cmdDeploy(cmd *command) (int, error) {
-	if len(cmd.args) < 2 || len(cmd.args) > 3 {
+	if len(cmd.args) != 3 {
 		printCommandUsage(cmd.name, 0)
 		return 1, nil
 	}
 	deploy := cmd.name == "deploy"
 	file := cmd.args[0]
+
 	service, realm := internal.ParseServiceRealm(cmd.args[1])
+
 	if cmd.mess.state.RequireRealm && realm == "" {
 		return 1, fmt.Errorf("realm is empty")
 	}
-	node := "all"
-	if len(cmd.args) == 3 {
-		node = cmd.args[2]
-	}
+
+	node := cmd.args[2]
+
 	if fi, err := os.Stat(file); err != nil {
 		return 1, err
 	} else if fi.Size() > 1<<30 {
 		return 1, fmt.Errorf("size too large: %v", fi.Size())
 	}
 
-	qry := fmt.Sprintf("?service=%v&realm=%v&restart=%v", service, realm, btoi(deploy))
+	qry := fmt.Sprintf("?service=%v&realm=%v", service, realm)
+
+	var ep string
+
+	if deploy {
+		ep = fmt.Sprintf("restart?realm=%v&service=%v", realm, service)
+	}
 
 	if node == "all" {
 		return cmd.eachNodeProgress(func(rec *mess.Node) error {
-			return cmd.post(rec.Address(), "store", qry, file)
+			if err := cmd.post(rec.Address(), "store", qry, file); err != nil {
+				return err
+			}
+			if deploy {
+				return cmd.call(rec.Address(), ep, nil, nil)
+			}
+			return nil
 		}), nil
 	}
+
 	return cmd.nodeProgress(node).cover(func() error {
-		return cmd.post(cmd.addr(node), "store", qry, file)
+		if err := cmd.post(cmd.addr(node), "store", qry, file); err != nil {
+			return err
+		}
+		if deploy {
+			return cmd.call(cmd.addr(node), ep, nil, nil)
+		}
+		return nil
 	}), nil
 }

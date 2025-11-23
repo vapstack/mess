@@ -1,10 +1,11 @@
 package mess
 
 import (
-	"mess/internal"
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/vapstack/mess/internal"
 )
 
 const (

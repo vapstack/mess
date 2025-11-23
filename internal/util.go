@@ -3,10 +3,53 @@ package internal
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"strconv"
 	"strings"
 )
+
+var ErrInvalidCaller = errors.New("invalid caller header")
+
+const SigHeader = "X-Mess-Sig"
+
+type RotateRequest struct {
+	Key string `json:"key"` // PEM
+	Crt string `json:"crt"` // PEM
+}
+
+func ConstructCaller(nodeID uint64, realm, service string) string {
+	var b strings.Builder
+	if nodeID > 0 {
+		b.WriteString(strconv.FormatUint(nodeID, 10))
+	}
+	b.WriteRune(';')
+	if realm != "" {
+		b.WriteString(realm)
+	}
+	b.WriteRune(';')
+	if service != "" {
+		b.WriteString(service)
+	}
+	return b.String()
+}
+
+func ParseCaller(s string) (nodeID uint64, realm string, service string, err error) {
+	n, rem, ok := strings.Cut(s, ";")
+	if ok {
+		if n != "" {
+			if nodeID, err = strconv.ParseUint(n, 10, 64); err != nil {
+				return
+			}
+		}
+		realm, service, ok = strings.Cut(rem, ";")
+	}
+	if !ok {
+		err = ErrInvalidCaller
+	}
+	return
+}
 
 func ParseNetworkAddr(v string) (string, string, error) {
 	if v == "" {
@@ -39,4 +82,11 @@ func ParseNetworkAddr(v string) (string, string, error) {
 func ParseServiceRealm(s string) (string, string) {
 	service, realm, _ := strings.Cut(s, "@")
 	return service, realm
+}
+
+func DrainAndCloseBody(res *http.Response) {
+	if res != nil {
+		_, _ = io.Copy(io.Discard, res.Body)
+		_ = res.Body.Close()
+	}
 }

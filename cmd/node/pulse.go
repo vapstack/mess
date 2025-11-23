@@ -6,21 +6,26 @@ import (
 	"encoding/gob"
 	"fmt"
 	"io"
-	"mess"
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/vapstack/mess"
+	"github.com/vapstack/mess/internal"
 )
+
+const pulseInterval = 13 * time.Second
 
 func (n *node) pulsing() {
 	defer n.wg.Done()
+	b := new(bytes.Buffer)
 	for {
 		select {
 		case <-n.ctx.Done():
 			return
-		case <-time.After(27 * time.Second):
-			d := n.getStatefullData()
-			b := new(bytes.Buffer)
+		case <-time.After(pulseInterval):
+			b.Reset()
+			d := n.getState()
 			e := gob.NewEncoder(b).Encode(d)
 			if e != nil {
 				n.logf("pulse: encode: %v", e)
@@ -36,29 +41,37 @@ func (n *node) pulsing() {
 }
 
 func (n *node) pulse(rec *mess.Node, data []byte) {
-	ctx, cancel := context.WithTimeout(n.ctx, 30*time.Second)
+	addr := rec.Address()
+	if addr == "" {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(n.ctx, pulseInterval)
 	defer cancel()
 
-	dst := fmt.Sprintf("https://%v:%v/pulse", rec.Address(), mess.PublicPort)
+	dst := fmt.Sprintf("https://%v:%v/pulse", addr, mess.PublicPort)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, dst, bytes.NewReader(data))
 	if err != nil {
 		n.logf("pulse: creating request to %v: %v", dst, err)
 		return
 	}
 
-	req.Header.Set("Content-Type", "application/gob")
-	req.Header.Set(mess.TargetServiceHeader, mess.NodeService)
-	req.Header.Set(mess.CallerServiceHeader, mess.NodeService)
+	// req.Header.Set("Content-Type", "application/gob")
+	// req.Header.Set(mess.CallerHeader, internal.ConstructCaller(n.id, "", mess.ServiceName))
+	// req.Header.Set(mess.TargetServiceHeader, mess.ServiceName)
+	// req.Header.Set(mess.CallerServiceHeader, mess.ServiceName)
+	// req.Header.Set(mess.CallerNodeHeader, strconv.FormatUint(n.id, 10))
+
 	req.Header.Set(mess.TargetNodeHeader, strconv.FormatUint(rec.ID, 10))
-	req.Header.Set(mess.CallerNodeHeader, strconv.FormatUint(n.id, 10))
 
 	res, err := n.client.Do(req)
 	if err != nil {
 		n.logf("pulse: request to %v: %v", dst, err)
 		return
 	}
-	defer func(rsp *http.Response) { _ = rsp.Body.Close() }(res)
-	defer func(rsp *http.Response) { _, _ = io.Copy(io.Discard, rsp.Body) }(res)
+	defer internal.DrainAndCloseBody(res)
+	// defer func(rsp *http.Response) { _ = rsp.Body.Close() }(res)
+	// defer func(rsp *http.Response) { _, _ = io.Copy(io.Discard, rsp.Body) }(res)
 
 	if res.StatusCode != http.StatusOK {
 		b, err := io.ReadAll(res.Body)
@@ -79,15 +92,17 @@ func (n *node) pulse(rec *mess.Node, data []byte) {
 		n.logf("pulse: decoding body: %v", err)
 		return
 	}
-	if _, err = n.applyPeerMap(v, rec.Address()); err != nil {
+	if _, err = n.applyPeerMap(v, addr); err != nil {
 		n.logf("pulse: %v", err)
 	}
 }
 
 func (n *node) applyPeerMap(req *mess.NodeState, remoteAddr string) (*mess.NodeState, error) {
+
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
+	// d := n.getState()
 	d := n.stateClone()
 
 	if req.Node != nil { // && !req.Node.Passive {
@@ -104,5 +119,5 @@ func (n *node) applyPeerMap(req *mess.NodeState, remoteAddr string) (*mess.NodeS
 		}
 	}
 
-	return d, n.storeState(d)
+	return d, n.saveState(d)
 }

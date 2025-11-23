@@ -7,10 +7,15 @@ servers, while having some basics out of the box.
 
 Those basics are currently:
 
-1. Process manager with an API for management and deployment
-2. Service mesh with automatic routing of HTTP traffic
+- Node manager with an API (certificate rotation, gossip, logging)
+- Process manager with an API (control, deployment, logging)
+- Service mesh with TLS and automatic routing of HTTP traffic
+- Event bus, durable and ephemeral messaging
+
+> None of the above is production ready
 
 TODO:
+- Metrics collection
 
-3. Event bus, durable and ephemeral messaging
-4. Metrics collection
+Maybe:
+- Pass additional streams to the binary (on Linux)

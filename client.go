@@ -3,11 +3,14 @@ package mess
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"net"
 	"net/http"
 	"strconv"
 	"sync"
-	"time"
+
+	"github.com/vapstack/mess/internal"
+	"golang.org/x/net/http2"
 )
 
 func NewClient() *http.Client {
@@ -45,7 +48,7 @@ type RoundTripper struct {
 	Realm   string // specific realm
 	Node    uint64 // single target node
 	Service string // single target service
-	*http.Transport
+	http.RoundTripper
 }
 
 func NewTransport() RoundTripper {
@@ -54,28 +57,37 @@ func NewTransport() RoundTripper {
 
 // NewCustomTransport creates a custom transport that can target specific realm, node and services.
 // Empty realm is treated as the current realm.
+// Since mess proxy supports h2c, NewCustomTransport creates an http2.Transport.
 func NewCustomTransport(realm string, node uint64, service string) RoundTripper {
 	return RoundTripper{
 		Realm:   realm,
 		Node:    node,
 		Service: service,
-		Transport: &http.Transport{
-			ForceAttemptHTTP2:      true,
-			DialContext:            DialContext,
-			DisableCompression:     true,
-			MaxIdleConns:           0,
-			MaxIdleConnsPerHost:    1024,
-			MaxConnsPerHost:        0,
-			IdleConnTimeout:        time.Minute,
-			MaxResponseHeaderBytes: 0,
+		RoundTripper: &http2.Transport{
+			DialTLSContext:     DialH2CContext,
+			DisableCompression: true,
+			AllowHTTP:          true,
 		},
+		// Transport: &http.Transport{
+		// 	ForceAttemptHTTP2:      true,
+		// 	DialContext:            DialContext,
+		// 	DisableCompression:     true,
+		// 	MaxIdleConns:           0,
+		// 	MaxIdleConnsPerHost:    1024,
+		// 	MaxConnsPerHost:        0,
+		// 	IdleConnTimeout:        time.Minute,
+		// 	MaxResponseHeaderBytes: 0,
+		// },
 	}
 }
 
 func (r RoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
-	if env.Service != "" {
-		request.Header.Set(CallerServiceHeader, env.Service)
-	}
+	// if env.Service != "" {
+	// 	request.Header.Set(CallerServiceHeader, env.Service)
+	// }
+
+	request.Header.Set(CallerHeader, internal.ConstructCaller(env.NodeID, env.Realm, env.Service))
+
 	if r.Realm != "" {
 		request.Header.Set(TargetRealmHeader, r.Realm)
 	}
@@ -85,11 +97,15 @@ func (r RoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
 	if r.Service != "" {
 		request.Header.Set(TargetServiceHeader, r.Service)
 	}
-	return r.Transport.RoundTrip(request)
+	return r.RoundTripper.RoundTrip(request)
 }
 
 /**/
 
 func DialContext(ctx context.Context, _ string, _ string) (net.Conn, error) {
+	return new(net.Dialer).DialContext(ctx, env.ProxyNetwork, env.ProxyAddr)
+}
+
+func DialH2CContext(ctx context.Context, _, _ string, _ *tls.Config) (net.Conn, error) {
 	return new(net.Dialer).DialContext(ctx, env.ProxyNetwork, env.ProxyAddr)
 }

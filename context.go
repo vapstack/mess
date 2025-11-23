@@ -2,20 +2,18 @@ package mess
 
 import (
 	"context"
-	"net/http"
-	"strconv"
 )
 
 type ctxKey string
 
-func addContextHeaders(ctx context.Context, h http.Header) {
-	if nodeID, ok := targetNodeFromContext(ctx); ok {
-		h.Set(TargetNodeHeader, strconv.FormatUint(nodeID, 10))
-	}
-	if realm, ok := targetRealmFromContext(ctx); ok {
-		h.Set(TargetRealmHeader, realm)
-	}
-}
+// func addContextHeaders(ctx context.Context, h http.Header) {
+// 	if nodeID, ok := targetNodeFromContext(ctx); ok {
+// 		h.Set(TargetNodeHeader, strconv.FormatUint(nodeID, 10))
+// 	}
+// 	if realm, ok := targetRealmFromContext(ctx); ok {
+// 		h.Set(TargetRealmHeader, realm)
+// 	}
+// }
 
 /**/
 

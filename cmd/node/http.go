@@ -7,67 +7,35 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"mess"
-	"mess/internal/proxy"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"strings"
 	"time"
+
+	"github.com/vapstack/mess"
+	"github.com/vapstack/mess/internal/proc"
+	"github.com/vapstack/mess/internal/proxy"
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 )
-
-//
-// type ctxKey string
-//
-// const ctxProxyBaseKey ctxKey = "proxyBase"
-//
-// func proxyRewrite(pr *httputil.ProxyRequest) {
-// 	b := pr.In.Context().Value(ctxProxyBaseKey).(*proxyBase)
-//
-// 	pr.Out.URL.Scheme = b.scheme
-// 	pr.Out.URL.Host = b.host
-// 	pr.Out.Host = b.host
-//
-// 	if b.caller.nodeID > 0 {
-// 		pr.Out.Header.Set(mess.CallerNodeHeader, strconv.FormatUint(b.caller.nodeID, 10))
-// 	}
-// 	if b.target.nodeID > 0 {
-// 		pr.Out.Header.Set(mess.TargetNodeHeader, strconv.FormatUint(b.target.nodeID, 10))
-// 	}
-//
-// 	if b.caller.realm != "" {
-// 		pr.Out.Header.Set(mess.CallerRealmHeader, b.caller.realm)
-// 	}
-// 	if b.target.realm != "" {
-// 		pr.Out.Header.Set(mess.TargetRealmHeader, b.target.realm)
-// 	}
-//
-// 	if b.caller.service != "" {
-// 		pr.Out.Header.Set(mess.CallerServiceHeader, b.caller.service)
-// 	}
-// 	if b.target.service != "" {
-// 		pr.Out.Header.Set(mess.TargetServiceHeader, b.target.service)
-// 	}
-// }
-
-/**/
 
 func (n *node) localHandler(hw http.ResponseWriter, hr *http.Request) {
 
-	b, w := proxy.GetBase(hw) // n.getProxyBase(hw)
-	defer b.Release()
-	defer n.collectMetrics(b)
+	w, r := proxy.Wrap(hw, hr) // n.getProxyBase(hw)
+	defer w.Release()
+	defer n.collectProxyMetrics(w)
 
-	if err := b.FromLocal(n.id, hr); err != nil {
+	if err := w.FromLocal(hr); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
-	r := hr.WithContext(proxy.WithBase(hr.Context(), b)) // hr.WithContext(context.WithValue(hr.Context(), ctxProxyBaseKey, b))
+	// r := hr.WithContext(proxy.NewContext(hr.Context(), b)) // hr.WithContext(context.WithValue(hr.Context(), ctxProxyBaseKey, b))
 
 	/*if n.dev {
 
-		if b.target.service == mess.NodeService {
+		if b.target.service == mess.ServiceName {
 			if r.Method == http.MethodPost {
 				if strings.Trim(r.URL.Path, "/") == "info" {
 					b.toLocal()
@@ -98,38 +66,38 @@ func (n *node) localHandler(hw http.ResponseWriter, hr *http.Request) {
 
 	d := n.state.Load()
 
-	if b.Target.Service == mess.NodeService {
+	if w.Target.Service == mess.ServiceName {
 
-		if b.Target.NodeID == 0 || b.Target.NodeID == n.id {
-			b.ToLocal()
-			n.nodeHandler(w, r, strings.Split(strings.Trim(r.URL.Path, "/"), "/"))
+		if w.Target.NodeID == 0 || w.Target.NodeID == n.id {
+			w.ToLocal()
+			n.nodeHandler(w, r, strings.Split(strings.Trim(r.URL.Path, "/"), "/"), true)
 			return
 		}
 
-		if tn, ok = d.Map[b.Target.NodeID]; !ok {
+		if tn, ok = d.Map[w.Target.NodeID]; !ok {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
 
-	} else if b.Target.NodeID == 0 || b.Target.NodeID == n.id {
+	} else if w.Target.NodeID == 0 || w.Target.NodeID == n.id {
 
-		if n.routeToLocal(w, r, b) {
+		if n.tryRouteToLocal(w, r) {
 			return
 		}
 
-		if b.Target.NodeID == n.id {
+		if w.Target.NodeID == n.id {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
 
-		nodes := (*n.remoteServices.Load()).getByRealmAndName(b.Target.Realm, b.Target.Service)
+		nodes := (*n.remoteServices.Load()).getByRealmAndName(w.Target.Realm, w.Target.Service)
 		if len(nodes) == 0 {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
 		tn = nodes[0]
 
-	} else if tn, ok = d.Map[b.Target.NodeID]; !ok {
+	} else if tn, ok = d.Map[w.Target.NodeID]; !ok {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
@@ -139,35 +107,32 @@ func (n *node) localHandler(hw http.ResponseWriter, hr *http.Request) {
 		return
 	}
 
-	b.ToRemote(tn)
+	if err := w.ToRemote(tn); err != nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+
 	n.proxy.ServeHTTP(w, r)
 	return
 }
 
-func (n *node) routeToLocal(w http.ResponseWriter, r *http.Request, b *proxy.Base) bool {
+func (n *node) tryRouteToLocal(w *proxy.Wrapper, r *http.Request) bool {
 
-	if pm := (*n.localServices.Load()).getByRealmAndName(b.Target.Realm, b.Target.Service); pm != nil {
-		if !pm.Passive() {
-			if p := pm.Proxy(); p != nil {
-				b.ToLocal()
-				p.ServeHTTP(w, r)
-				return true
-			}
-		}
-	}
-	if rr := (*n.localAliases.Load()).getByRealmAndName(b.Target.Realm, b.Target.Service); rr != nil {
+	// if pm := (*n.localServices.Load()).getByRealmAndName(w.Target.Realm, w.Target.Service); pm != nil {
+	// 	if tryLocal(pm, w, r) {
+	// 		return true
+	// 	}
+	// }
+
+	if rr := (*n.localAliases.Load()).getByRealmAndName(w.Target.Realm, w.Target.Service); rr != nil {
 		if len(rr.pms) == 1 {
-			if p := rr.pms[0].Proxy(); p != nil {
-				b.ToLocal()
-				p.ServeHTTP(w, r)
+			if n.tryRouteToProcess(rr.pms[0], w, r) {
 				return true
 			}
 		} else if len(rr.pms) > 1 {
 			for range rr.pms {
-				if pm := rr.pms[int(rr.rr.Add(1)%uint64(len(rr.pms)))]; pm != nil {
-					if p := pm.Proxy(); p != nil {
-						b.ToLocal()
-						p.ServeHTTP(w, r)
+				if pm := rr.pms[int(rr.next.Add(1)%uint64(len(rr.pms)))]; pm != nil {
+					if n.tryRouteToProcess(pm, w, r) {
 						return true
 					}
 				}
@@ -177,79 +142,174 @@ func (n *node) routeToLocal(w http.ResponseWriter, r *http.Request, b *proxy.Bas
 	return false
 }
 
+func (n *node) tryRouteToProcess(pm *proc.Manager, w *proxy.Wrapper, r *http.Request) bool {
+	if n.id == w.Caller.NodeID {
+		svc := pm.Service()
+		if w.Caller.Realm == svc.Realm && w.Caller.Service == svc.Name {
+			return false
+		}
+	}
+	if !pm.Passive() {
+		if p := pm.Proxy(); p != nil {
+			w.ToLocal()
+			p.ServeHTTP(w, r)
+			return true
+		}
+	}
+	return false
+}
+
 func (n *node) publicHandler(hw http.ResponseWriter, hr *http.Request) {
 
-	b, w := proxy.GetBase(hw) // n.getProxyBase(hw)
-	defer b.Release()
-	defer n.collectMetrics(b)
+	w, r := proxy.Wrap(hw, hr)
+	defer w.Release()
+	defer n.collectProxyMetrics(w)
 
-	// r := hr.WithContext(context.WithValue(hr.Context(), ctxProxyBaseKey, b))
-	r := hr.WithContext(proxy.WithBase(hr.Context(), b))
-
-	if err := b.FromRemote(r); err != nil {
+	if err := w.FromRemote(r); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
-	if b.Target.Service == "" {
+	if w.Target.Service == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
-	if b.Target.Service == mess.NodeService {
-		b.ToLocal()
-		n.nodeHandler(w, r, strings.Split(strings.Trim(r.URL.Path, "/"), "/"))
+	if w.Target.NodeID != 0 && w.Target.NodeID != n.id {
+		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
-	if n.routeToLocal(w, r, b) {
+	if w.Target.Service == mess.ServiceName {
+		w.ToLocal()
+		n.nodeHandler(w, r, strings.Split(strings.Trim(r.URL.Path, "/"), "/"), false)
+		return
+	}
+
+	if n.tryRouteToLocal(w, r) {
 		return
 	}
 
 	w.WriteHeader(http.StatusNotFound)
 }
 
-func (n *node) nodeHandler(w http.ResponseWriter, r *http.Request, path []string) {
+func (n *node) nodeHandler(w *proxy.Wrapper, r *http.Request, path []string, fromLocal bool) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
 	if len(path) != 1 {
+		// if path[0] == "publish" {
+		// 	r.Pattern = path[1]
+		// } else {
+		// 	w.WriteHeader(http.StatusNotFound)
+		// 	return
+		// }
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-	fn, ok := nodeHandlers[path[0]]
+	h, ok := nodeHandlers[path[0]]
 	if !ok {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-	fn(n, w, r)
+	h.call(n, w, r, fromLocal)
 }
 
 func (n *node) setupProxyClient() {
 
-	n.client = &http.Client{
-		Transport: &http.Transport{
-			ForceAttemptHTTP2:     true,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ExpectContinueTimeout: 2 * time.Second,
+	transport := &http.Transport{
 
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify:    true,
-				GetCertificate:        n.getCert,
-				VerifyPeerCertificate: n.verifyPeerCert,
-				RootCAs:               n.pool,
-				MinVersion:            tls.VersionTLS13,
-			},
+		ForceAttemptHTTP2:     true,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 2 * time.Second,
+
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify:    true,
+			GetCertificate:        n.getCert,
+			VerifyPeerCertificate: n.verifyPeerCert,
+			RootCAs:               n.pool,
+			MinVersion:            tls.VersionTLS13,
 		},
 	}
 
 	n.proxy = &httputil.ReverseProxy{
 		Rewrite:       proxy.Rewrite,
-		Transport:     n.client.Transport,
+		Transport:     transport,
 		BufferPool:    proxy.BufferPool,
 		FlushInterval: -1,
 	}
+
+	n.client = &http.Client{
+		Transport: &roundTripper{
+			node:   n,
+			base:   transport,
+			caller: fmt.Sprintf("%v;;%v", n.id, mess.ServiceName),
+		},
+	}
+}
+
+type roundTripper struct {
+	caller string
+	base   *http.Transport
+	node   *node
+}
+
+type clientMeter struct {
+	Start  time.Time
+	Target string
+	Status int
+	Bytes  uint64
+	Body   io.ReadCloser
+
+	node *node
+}
+
+func (rt *roundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
+	// todo: get from pool?
+	m := &clientMeter{
+		Start:  time.Now(),
+		Target: r.Header.Get(mess.TargetNodeHeader),
+		Status: http.StatusOK,
+		node:   rt.node,
+	}
+	r.Header.Set(mess.CallerHeader, rt.caller)
+	r.Header.Set(mess.TargetServiceHeader, mess.ServiceName)
+	r.Header.Set("Content-Type", "application/gob") // ~?
+
+	response, err := rt.base.RoundTrip(r)
+	if err != nil {
+		return response, err // no request was made
+	}
+	m.Status = response.StatusCode
+	m.Body = response.Body
+	response.Body = m
+
+	return response, nil
+}
+
+func (m *clientMeter) Read(p []byte) (int, error) {
+
+	n, err := m.Body.Read(p)
+	m.Bytes += uint64(n)
+
+	if err != nil {
+		m.node.collectClientMetrics(m)
+		m.release()
+	}
+
+	return n, err
+}
+
+func (m *clientMeter) Close() error {
+	err := m.Body.Close()
+	m.node.collectClientMetrics(m)
+	m.release()
+	return err
+}
+
+func (m *clientMeter) release() {
+	// todo: return to pool?
 }
 
 /**/
@@ -321,9 +381,13 @@ func (n *node) setupPublicServer() (stopfn func(), errch chan error, err error) 
 	}
 
 	publicServer := &http.Server{
-		Handler:   http.HandlerFunc(n.publicHandler),
-		TLSConfig: tlsConfig,
-		ErrorLog:  log.New(io.Discard, "", 0),
+		Handler:           h2c.NewHandler(http.HandlerFunc(n.publicHandler), nil),
+		TLSConfig:         tlsConfig,
+		ErrorLog:          log.New(io.Discard, "", 0),
+		ReadHeaderTimeout: 4 * time.Second,
+	}
+	if err = http2.ConfigureServer(publicServer, nil); err != nil {
+		return nil, nil, fmt.Errorf("http/2 server configuration error: %w", err)
 	}
 
 	stopfn = func() {

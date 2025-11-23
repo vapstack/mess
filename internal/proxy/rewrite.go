@@ -2,50 +2,42 @@ package proxy
 
 import (
 	"context"
-	"mess"
 	"net/http/httputil"
 	"strconv"
+
+	"github.com/vapstack/mess"
+	"github.com/vapstack/mess/internal"
 )
 
 type ctxKey string
 
 const ctxProxyBaseKey ctxKey = "proxyBase"
 
-func WithBase(parent context.Context, b *Base) context.Context {
-	return context.WithValue(parent, ctxProxyBaseKey, b)
-}
+// func NewContext(parent context.Context, w *Wrapper) context.Context {
+// 	return context.WithValue(parent, ctxProxyBaseKey, w)
+// }
 
-func BaseFromContext(ctx context.Context) *Base {
-	v, _ := ctx.Value(ctxProxyBaseKey).(*Base)
-	return v
+func FromContext(ctx context.Context) *Wrapper {
+	w, _ := ctx.Value(ctxProxyBaseKey).(*Wrapper)
+	return w
 }
 
 func Rewrite(pr *httputil.ProxyRequest) {
-	b := BaseFromContext(pr.In.Context())
-	// b := pr.In.Context().Value(ctxProxyBaseKey).(*Base)
+	w := FromContext(pr.In.Context())
 
-	pr.Out.URL.Scheme = b.Scheme
-	pr.Out.URL.Host = b.Host
-	pr.Out.Host = b.Host
+	pr.Out.URL.Scheme = w.Scheme
+	pr.Out.URL.Host = w.Host
+	pr.Out.Host = w.Host
 
-	if b.Caller.NodeID > 0 {
-		pr.Out.Header.Set(mess.CallerNodeHeader, strconv.FormatUint(b.Caller.NodeID, 10))
-	}
-	if b.Target.NodeID > 0 {
-		pr.Out.Header.Set(mess.TargetNodeHeader, strconv.FormatUint(b.Target.NodeID, 10))
-	}
+	pr.Out.Header.Set(mess.CallerHeader, internal.ConstructCaller(w.Caller.NodeID, w.Caller.Realm, w.Caller.Service))
 
-	if b.Caller.Realm != "" {
-		pr.Out.Header.Set(mess.CallerRealmHeader, b.Caller.Realm)
+	if w.Target.NodeID > 0 {
+		pr.Out.Header.Set(mess.TargetNodeHeader, strconv.FormatUint(w.Target.NodeID, 10))
 	}
-	if b.Target.Realm != "" {
-		pr.Out.Header.Set(mess.TargetRealmHeader, b.Target.Realm)
+	if w.Target.Realm != "" {
+		pr.Out.Header.Set(mess.TargetRealmHeader, w.Target.Realm)
 	}
-
-	if b.Caller.Service != "" {
-		pr.Out.Header.Set(mess.CallerServiceHeader, b.Caller.Service)
-	}
-	if b.Target.Service != "" {
-		pr.Out.Header.Set(mess.TargetServiceHeader, b.Target.Service)
+	if w.Target.Service != "" {
+		pr.Out.Header.Set(mess.TargetServiceHeader, w.Target.Service)
 	}
 }

@@ -1,39 +1,65 @@
 package main
 
 import (
+	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/binary"
 	"encoding/pem"
+	"errors"
 	"fmt"
-	"mess"
-	"mess/internal"
 	"path/filepath"
 	"strconv"
+	"time"
+	"unsafe"
+
+	"github.com/vapstack/mess"
+	"github.com/vapstack/mess/internal"
 )
+
+/*
+func (n *node) loadMessPublicKey() (ed25519.PublicKey, error) {
+	caBytes, err := internal.ReadFile(filepath.Join(n.path, "mess.crt"))
+	if err != nil {
+		return nil, fmt.Errorf("reading mess.crt: %v", e)
+	}
+	cert, err := x509.ParseCertificate(caBytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse cert: %w", err)
+	}
+	return cert.PublicKey.(ed25519.PublicKey), nil
+}
+*/
 
 func (n *node) loadCert() error {
 
-	caBytes, e := internal.ReadFile(filepath.Join(n.path, "mess.crt"))
-	if e != nil {
-		return fmt.Errorf("reading mess.crt: %v", e)
+	caBytes, err := internal.ReadFile(filepath.Join(n.path, "mess.crt"))
+	if err != nil {
+		return fmt.Errorf("reading mess.crt: %v", err)
 	}
 	n.pool = x509.NewCertPool()
 	if ok := n.pool.AppendCertsFromPEM(caBytes); !ok {
 		return fmt.Errorf("failed to append certificate to the pool")
 	}
 
-	keyBytes, e := internal.ReadFile(filepath.Join(n.path, "node.key"))
-	if e != nil {
-		return fmt.Errorf("reading node.key: %w", e)
+	caCert, err := x509.ParseCertificate(caBytes)
+	if err != nil {
+		return fmt.Errorf("failed to parse root certificate: %w", err)
 	}
-	crtBytes, e := internal.ReadFile(filepath.Join(n.path, "node.crt"))
-	if e != nil {
-		return fmt.Errorf("reading node.crt: %w", e)
+	n.pubk = caCert.PublicKey.(ed25519.PublicKey)
+
+	keyBytes, err := internal.ReadFile(filepath.Join(n.path, "node.key"))
+	if err != nil {
+		return fmt.Errorf("reading node.key: %w", err)
+	}
+	crtBytes, err := internal.ReadFile(filepath.Join(n.path, "node.crt"))
+	if err != nil {
+		return fmt.Errorf("reading node.crt: %w", err)
 	}
 
-	cert, e := tls.X509KeyPair(crtBytes, keyBytes)
-	if e != nil {
-		return fmt.Errorf("construct cert: %w", e)
+	cert, err := tls.X509KeyPair(crtBytes, keyBytes)
+	if err != nil {
+		return fmt.Errorf("construct cert: %w", err)
 	}
 
 	n.cert.Store(&cert)
@@ -53,11 +79,14 @@ func (n *node) verifyPeerCert(raw [][]byte, _ [][]*x509.Certificate) error {
 		return e
 	}
 	nid, err := strconv.ParseUint(cert.Subject.CommonName, 10, 64)
-	if err != nil || nid == 0 {
+	if err != nil {
 		return mess.ErrInvalidNode
 	}
-	if len(cert.Subject.Organization) == 0 || cert.Subject.Organization[0] != mess.NodeService {
-		return fmt.Errorf("invalid")
+	if nid == n.id {
+		return mess.ErrInvalidNode
+	}
+	if len(cert.Subject.Organization) == 0 || cert.Subject.Organization[0] != mess.ServiceName {
+		return errors.New("invalid org")
 	}
 	_, err = cert.Verify(x509.VerifyOptions{Roots: n.pool})
 	return err
@@ -83,7 +112,7 @@ func VerifyCertCA(pool *x509.CertPool, certPEM []byte) error {
 	if err != nil {
 		return err
 	}
-	if len(cert.Subject.Organization) == 0 || cert.Subject.Organization[0] != mess.NodeService {
+	if len(cert.Subject.Organization) == 0 || cert.Subject.Organization[0] != mess.ServiceName {
 		return fmt.Errorf("invalid")
 	}
 	if _, err = cert.Verify(x509.VerifyOptions{Roots: pool}); err != nil {
@@ -113,5 +142,24 @@ func VerifyPK(keyPEM []byte) error {
 	if err != nil {
 		return err
 	}
+	return nil
+}
+
+func verifySignatureHeader(publicKey ed25519.PublicKey, value string) error {
+	data := unsafe.Slice(unsafe.StringData(value), len(value))
+	if len(data) <= 8 {
+		return errors.New("invalid data len")
+	}
+
+	if !ed25519.Verify(publicKey, data[:8], data[8:]) {
+		return errors.New("signature verification failed")
+	}
+
+	ts := int64(binary.BigEndian.Uint64(data[:8]))
+
+	if time.Since(time.Unix(ts, 0)) > 10*time.Second {
+		return errors.New("signature verification failed")
+	}
+
 	return nil
 }

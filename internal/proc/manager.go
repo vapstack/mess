@@ -8,9 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"mess"
-	"mess/internal"
-	"mess/internal/proxy"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -23,6 +20,10 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/vapstack/mess"
+	"github.com/vapstack/mess/internal"
+	"github.com/vapstack/mess/internal/proxy"
 
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
@@ -48,15 +49,12 @@ type Manager struct {
 
 	proxy atomic.Pointer[httputil.ReverseProxy]
 
-	// startCh    chan startReq
-	// stopCh     chan stopReq
-	// shutdownCh chan shutdownReq
 	binLogs chan []byte
 	mgrLogs chan error
 
 	versionPath string
 
-	mu sync.Mutex // single-flight for commands
+	mu sync.Mutex // for apis
 
 	cmd *exec.Cmd
 }
@@ -67,23 +65,15 @@ func NewManager(dev bool, nodeID uint64, svcroot string, hh http.HandlerFunc, s 
 		realm = "default"
 	}
 	pm := &Manager{
-		dev:     dev,
-		node:    nodeID,
+		dev:  dev,
+		node: nodeID,
+
 		path:    filepath.Join(svcroot, realm, s.Name),
 		datadir: filepath.Join(svcroot, realm, s.Name, "data"),
+
 		handler: hh,
-		// logdir:  filepath.Join(n.path, "log"),
-		// node: n,
 
-		// sock:    filepath.Join(n.path, "svc", realm, s.Name, "proxy.sock"),
-		// order: s.Order,
-		// realm:   s.Realm,
-
-		// startCh:    make(chan startReq),
-		// stopCh:     make(chan stopReq),
-		// shutdownCh: make(chan shutdownReq),
-
-		binLogs: make(chan []byte, 256),
+		binLogs: make(chan []byte, 32),
 		mgrLogs: make(chan error, 32),
 	}
 
@@ -98,18 +88,11 @@ func NewManager(dev bool, nodeID uint64, svcroot string, hh http.HandlerFunc, s 
 		return nil, err
 	}
 
-	// if err := os.MkdirAll(pm.logdir, 0700); err != nil {
-	// 	return nil, err
-	// }
-
 	if err := pm.loadMeta(); err != nil && !pm.dev {
 		log.Printf("no meta information found for %v: %v\n", s.Name, err)
 	}
 
 	pm.cleanup()
-
-	// go pm.monitor()
-	// go pm.writeLogs()
 
 	if !s.Manual {
 		err := pm.Start()
@@ -250,21 +233,13 @@ func (pm *Manager) Start() error {
 
 	if inProxy, err := createServiceIncomingProxy(svc, binpath); err != nil {
 		pm.mgrLogs <- fmt.Errorf("failed to create incoming proxy for %v: %v", svc.Name, err)
-		// pm.node.messlogf("failed to create incoming proxy for %v: %v", svc.Name, err)
-		// return err
 	} else {
 		pm.proxy.Store(inProxy)
 	}
 
-	// if err = pm.createProxy(binpath); err != nil {
-	// 	pm.node.messlogf("failed to create proxy for %v: %v", svc.Name, err)
-	// }
-
 	pm.running.Store(true)
 
 	pm.cmd = cmd
-
-	// pm.node.rebuildAliasMap()
 
 	if !pm.dev {
 		go func(c *exec.Cmd) {
@@ -272,7 +247,6 @@ func (pm *Manager) Start() error {
 				pm.mgrLogs <- fmt.Errorf("%v@%v exited with non-zero code: %v", svc.Name, svc.Realm, e)
 			}
 			pm.running.Store(false)
-			// pm.node.rebuildAliasMap()
 			go pm.autorestart(1)
 		}(cmd)
 	}
@@ -314,7 +288,7 @@ func (pm *Manager) streamLogs(r io.Reader) {
 	}
 }
 
-func (pm *Manager) Stop(timeout int) error {
+func (pm *Manager) Stop() error {
 	if !pm.running.Load() {
 		return nil
 	}
@@ -323,8 +297,6 @@ func (pm *Manager) Stop(timeout int) error {
 	defer pm.mu.Unlock()
 
 	pm.stopped.Store(true)
-
-	// pm.node.rebuildAliasMap()
 
 	var proc *os.Process
 
@@ -352,11 +324,13 @@ func (pm *Manager) Stop(timeout int) error {
 		pm.unixsock = ""
 	}()
 
+	svc := pm.service.Load()
+
 	if pm.dev {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := pm.server.Shutdown(ctx); err != nil {
-			pm.mgrLogs <- fmt.Errorf("server shutdown error: %v", err)
+			pm.mgrLogs <- fmt.Errorf("%v@%v: server shutdown error: %v", svc.Name, svc.Realm, err)
 		}
 		return nil
 	}
@@ -364,17 +338,14 @@ func (pm *Manager) Stop(timeout int) error {
 	if pm.server != nil {
 		go func() {
 			if err := pm.server.Shutdown(context.Background()); err != nil {
-				pm.mgrLogs <- fmt.Errorf("server shutdown error: %v", err)
+				pm.mgrLogs <- fmt.Errorf("%v@%v: server shutdown error: %v", svc.Name, svc.Realm, err)
 			}
 		}()
 	}
 
-	svc := pm.service.Load()
-
-	if timeout == 0 {
-		if timeout = svc.Timeout; timeout == 0 {
-			timeout = 600
-		}
+	timeout := svc.Timeout
+	if timeout <= 0 {
+		timeout = 60
 	}
 
 	done := make(chan error, 1)
@@ -386,14 +357,14 @@ func (pm *Manager) Stop(timeout int) error {
 	select {
 	case err := <-done:
 		if err != nil {
-			pm.mgrLogs <- fmt.Errorf("process shutdown error: %v", err)
+			pm.mgrLogs <- fmt.Errorf("%v@%v: process shutdown error: %v", svc.Name, svc.Realm, err)
 		}
 
 	case <-time.After(time.Duration(timeout) * time.Second):
 		if err := proc.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
-			pm.mgrLogs <- fmt.Errorf("timeout reached, failed to kill process: %w", err)
+			pm.mgrLogs <- fmt.Errorf("%v@%v: timeout reached, failed to kill process: %w", svc.Name, svc.Realm, err)
 		} else {
-			pm.mgrLogs <- fmt.Errorf("timeout reached, process killed")
+			pm.mgrLogs <- fmt.Errorf("%v@%v: timeout reached, process killed", svc.Name, svc.Realm)
 		}
 		<-done
 	}
@@ -476,29 +447,23 @@ func (pm *Manager) Store(filename string) error {
 	return nil
 }
 
-func (pm *Manager) Shutdown(timeout int) error {
-	if err := pm.Stop(timeout); err != nil {
+func (pm *Manager) Shutdown() error {
+	if err := pm.Stop(); err != nil {
 		return err
 	}
 	close(pm.mgrLogs)
 	close(pm.binLogs)
 	return nil
-	// resp := make(chan error, 1)
-	// pm.shutdownCh <- shutdownReq{resp: resp}
-	// return <-resp
 }
 
 func (pm *Manager) Delete() error {
-	if err := pm.Shutdown(0); err != nil {
+	if err := pm.Shutdown(); err != nil {
 		return fmt.Errorf("shutdown error: %w", err)
 	}
 	if err := os.RemoveAll(pm.path); err != nil {
 		return err
 	}
-	// s := pm.service.Load()
-
 	return nil
-	// return pm.node.deleteService(s)
 }
 
 func (pm *Manager) cleanup() {
@@ -566,14 +531,18 @@ func (pm *Manager) createServiceOutgoingProxy(svc *mess.Service) (string, error)
 	pm.server = &http.Server{
 		Handler: h2c.NewHandler(
 			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				r.Header.Set(mess.CallerNodeHeader, strconv.FormatUint(pm.node, 10))
-				r.Header.Set(mess.CallerRealmHeader, svc.Realm)
-				r.Header.Set(mess.CallerServiceHeader, svc.Name)
-				pm.handler(w, r) // node.localHandler(w, r)
+				r.Header.Set(mess.CallerHeader, internal.ConstructCaller(pm.node, svc.Realm, svc.Name))
+				// r.Header.Set(mess.CallerNodeHeader, strconv.FormatUint(pm.node, 10))
+				// r.Header.Set(mess.CallerRealmHeader, svc.Realm)
+				// r.Header.Set(mess.CallerServiceHeader, svc.Name)
+				pm.handler(w, r)
 			}),
 			new(http2.Server),
 		),
 		ErrorLog: log.New(io.Discard, "", 0),
+	}
+	if err = http2.ConfigureServer(pm.server, nil); err != nil {
+		return "", fmt.Errorf("http/2 server configuration error: %w", err)
 	}
 
 	go func() {
@@ -621,6 +590,7 @@ func createServiceIncomingProxy(svc *mess.Service, binpath string) (*httputil.Re
 		if host == "" || host == "localhost" {
 			host = "127.0.0.1"
 		}
+		// host = "127.0.0.1"
 		dst := net.JoinHostPort(host, port)
 		transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return new(net.Dialer).DialContext(ctx, "tcp", dst)
@@ -636,29 +606,6 @@ func createServiceIncomingProxy(svc *mess.Service, binpath string) (*httputil.Re
 
 	return p, nil
 }
-
-// func (pm *Manager) writeLogs() {
-// 	logs := make([][]byte, 0, 128)
-// 	svc := pm.service.Load()
-// 	for {
-// 		select {
-// 		case <-time.After(time.Second):
-// 			if len(logs) > 0 {
-// 				pm.node.writeLogs(svc.Realm, svc.Name, logs...)
-// 				logs = logs[:0]
-// 			}
-// 		case b, ok := <-pm.logs:
-// 			if len(b) > 0 {
-// 				logs = append(logs, b)
-// 			}
-// 			if !ok {
-// 				pm.node.writeLogs(svc.Realm, svc.Name, logs...)
-// 				logs = logs[:0]
-// 				return
-// 			}
-// 		}
-// 	}
-// }
 
 func samePath(a, b string) bool {
 	ap, err1 := filepath.EvalSymlinks(a)

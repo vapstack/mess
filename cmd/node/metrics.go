@@ -1,12 +1,11 @@
 package main
 
 import (
-	"mess/internal/proxy"
-	"time"
+	"github.com/vapstack/mess/internal/proxy"
 )
 
-func (n *node) collectMetrics(b *proxy.Base) {
-	b.Duration = time.Since(b.Start)
+func (n *node) collectProxyMetrics(b *proxy.Wrapper) {
+	// duration := time.Since(b.Start)
 
 	// enc := json.NewEncoder(os.Stdout)
 	// enc.SetIndent("", "  ")
@@ -23,4 +22,11 @@ func (n *node) collectMetrics(b *proxy.Base) {
 
 	// todo
 	// n.metrics <- bw // + somewhere putWriter(bw)
+}
+
+func (n *node) collectClientMetrics(m *clientMeter) {
+	// duration := time.Since(m.Start)
+
+	// todo
+	// n.metrics <- ...
 }
