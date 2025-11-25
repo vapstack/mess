@@ -691,6 +691,8 @@ type monobolt struct {
 }
 
 func newMonoBolt(nodeID int, filename string) (*monobolt, error) {
+	opts := *bbolt.DefaultOptions
+	opts.Timeout = time.Second
 	bolt, err := bbolt.Open(filename, 0600, nil)
 	if err != nil {
 		return nil, fmt.Errorf("initialization error: %w", err)
