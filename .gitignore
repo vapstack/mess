@@ -17,4 +17,5 @@ cmd/node/node.json
 cmd/node/node.dev.json
 cmd/node/log/
 cmd/node/svc/
+cmd/node/bus/
 cmd/node/tmp/
