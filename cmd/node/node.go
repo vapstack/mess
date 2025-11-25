@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -27,6 +28,7 @@ import (
 
 	"github.com/rosedblabs/rosedb/v2"
 	"github.com/vapstack/monotime"
+	bolterrors "go.etcd.io/bbolt/errors"
 )
 
 func main() {
@@ -107,23 +109,13 @@ func main() {
 			log.Println("fatal:", err)
 			return
 		}
-		// defer func() {
-		//
-		// }()
 	}
-	// defer func() {
-	//
-	// }()
-
-	// lgen := monotime.NewGen(filepath.Join(n.busdir, "log.last"))
-	// if err != nil {
-	// 	log.Println("fatal: error creating log sequence:", err)
-	// 	return
-	// }
-	// n.logids = monotime.NewGen(0)
 
 	bgen, err := newMonoBolt(int(n.id), filepath.Join(n.busdir, "last"))
 	if err != nil {
+		if errors.Is(err, bolterrors.ErrTimeout) {
+			log.Println("fatal: node is already running", err)
+		}
 		log.Println("fatal: error initializing bus sequence:", err)
 		return
 	}
@@ -131,25 +123,6 @@ func main() {
 	n.busTopics = new(topicTracker)
 
 	n.ctx, _ = signal.NotifyContext(context.Background(), os.Interrupt, os.Kill, syscall.SIGTERM, syscall.SIGHUP)
-
-	/**/
-
-	/**/
-
-	// n.logseq = newSeqGen(n.id)
-
-	/**/
-
-	/**/
-
-	// localStop, localServerErr, err := n.setupLocalServer()
-	// if err != nil {
-	// 	log.Println("fatal:", err)
-	// 	return
-	// }
-	// defer localStop()
-	//
-	// log.Println("local listener started")
 
 	/**/
 
@@ -166,7 +139,6 @@ func main() {
 
 	var publicServerErr chan error
 
-	// if !n.dev {
 	var publicStop func()
 	publicStop, publicServerErr, err = n.setupPublicServer()
 	if err != nil {
@@ -174,9 +146,6 @@ func main() {
 		return
 	}
 	defer publicStop()
-
-	// log.Println("public listener started")
-	// }
 
 	/**/
 
@@ -196,21 +165,9 @@ func main() {
 	log.Println("node started")
 	started = true
 
-	// if n.dev {
-	// 	if err = n.addDevServices(); err != nil {
-	// 		log.Println("fatal:", err)
-	// 		return
-	// 	}
-	// }
-
 	select {
 	case <-n.ctx.Done():
 		log.Println(mess.ErrInterrupt)
-
-	// case e := <-localServerErr:
-	// 	if e != nil {
-	// 		log.Println("fatal: local server error:", e)
-	// 	}
 
 	case e := <-publicServerErr:
 		if e != nil {
