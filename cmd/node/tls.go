@@ -5,13 +5,13 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"path/filepath"
 	"strconv"
 	"time"
-	"unsafe"
 
 	"github.com/vapstack/mess"
 	"github.com/vapstack/mess/internal"
@@ -155,7 +155,10 @@ func VerifyPK(keyPEM []byte) error {
 }
 
 func verifySignatureHeader(publicKey ed25519.PublicKey, value string) error {
-	data := unsafe.Slice(unsafe.StringData(value), len(value))
+	data, err := hex.DecodeString(value)
+	if err != nil {
+		return errors.New("signature verification failed")
+	}
 	if len(data) <= 8 {
 		return errors.New("invalid data len")
 	}

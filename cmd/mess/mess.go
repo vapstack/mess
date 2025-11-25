@@ -10,6 +10,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/binary"
 	"encoding/gob"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -26,7 +27,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-	"unsafe"
 
 	"github.com/vapstack/mess"
 	"github.com/vapstack/mess/internal"
@@ -605,7 +605,7 @@ func signatureHeader(key ed25519.PrivateKey) string {
 	data := make([]byte, 8, 48)
 	binary.BigEndian.PutUint64(data, uint64(time.Now().Unix()))
 	b := append(data, ed25519.Sign(key, data)...)
-	return unsafe.String(unsafe.SliceData(b), len(b))
+	return hex.EncodeToString(b)
 }
 
 /**/
