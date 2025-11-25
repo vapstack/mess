@@ -165,7 +165,7 @@ func (w *Wrapper) FromRemote(r *http.Request) (err error) {
 
 	w.Target.Service = r.Header.Get(mess.TargetServiceHeader)
 	w.Target.Realm = r.Header.Get(mess.TargetRealmHeader)
-	w.Target.NodeID, err = parseTargetNode(mess.TargetNodeHeader)
+	w.Target.NodeID, err = parseTargetNode(r.Header.Get(mess.TargetNodeHeader))
 
 	return err
 }
