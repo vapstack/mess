@@ -236,6 +236,14 @@ func cmdAdd(cmd *command) (int, error) {
 		if err := cmd.call(addr, "pulse", cmd.mess.state, state); err != nil {
 			return err
 		}
+		if state.Node == nil {
+			return fmt.Errorf("no node information returned")
+		}
+		for id := range cmd.mess.state.Map {
+			if id == state.Node.ID {
+				return fmt.Errorf("the node is either already added or running with a node id already taken")
+			}
+		}
 		return cmd.applyState(state, addr)
 	})
 
