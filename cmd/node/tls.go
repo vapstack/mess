@@ -42,11 +42,20 @@ func (n *node) loadCert() error {
 		return fmt.Errorf("failed to append certificate to the pool")
 	}
 
-	caCert, err := x509.ParseCertificate(caBytes)
+	block, _ := pem.Decode(caBytes)
+	if block == nil {
+		return fmt.Errorf("no PEM data in mess.crt")
+	}
+
+	caCert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
 		return fmt.Errorf("failed to parse root certificate: %w", err)
 	}
-	n.pubk = caCert.PublicKey.(ed25519.PublicKey)
+	pub, ok := caCert.PublicKey.(ed25519.PublicKey)
+	if !ok {
+		return fmt.Errorf("root public key is not ed25519")
+	}
+	n.pubk = pub
 
 	keyBytes, err := internal.ReadFile(filepath.Join(n.path, "node.key"))
 	if err != nil {
