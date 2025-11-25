@@ -176,7 +176,7 @@ func init() {
 			public: true,
 			fn: func(n *node, w *proxy.Wrapper, r *http.Request) {
 				q := r.URL.Query()
-				service, realm := internal.ParseServiceRealm(rMust(getService(q))) // mess/restart/?service=UserService@amk
+				service, realm := internal.ParseServiceRealm(rMust(getService(q)))
 				rsCheck(n.serviceCommand("restart", getRealm(realm, w, q), service))
 			},
 		},
@@ -211,16 +211,16 @@ func init() {
 				sCheck(n.publish(w.Caller.Realm, req))
 			},
 		},
-		"receive": {
+		"subscribe": {
 			local: true,
 			fn: func(n *node, w *proxy.Wrapper, r *http.Request) {
-				req := rMust(BodyTo[mess.ReceiveRequest](w, r, 0))
+				req := rMust(BodyTo[mess.SubscribeRequest](w, r, 0))
 				rFail(req.Topic == "", "topic is empty")
-				if req.Stream {
-					outStream(n, w, r, sMust(n.receiveStream(w.Caller.Realm, req)))
-				} else {
-					sCheck(send(w, r, sMust(n.receiveRequest(w.Caller.Realm, req))))
-				}
+				// if req.Stream {
+				outStream(n, w, r, sMust(n.subscriptionStream(w.Caller.Realm, req)))
+				// } else {
+				// 	sCheck(send(w, r, sMust(n.receiveRequest(w.Caller.Realm, req))))
+				// }
 			},
 		},
 		"events": {
@@ -228,6 +228,9 @@ func init() {
 			fn: func(n *node, w *proxy.Wrapper, r *http.Request) {
 				req := rMust(BodyTo[mess.EventsRequest](w, r, 0))
 				rFail(req.Topic == "", "topic is empty")
+				if req.Realm == "" {
+					req.Realm = w.Caller.Realm
+				}
 				if req.Stream {
 					outStream(n, w, r, sMust(n.eventsStream(req)))
 				} else {
@@ -241,10 +244,11 @@ func init() {
 		"emit": {
 			local: true,
 			fn: func(n *node, w *proxy.Wrapper, r *http.Request) {
+				// req := rMust(BodyTo[mess.EmitRequest](w, r, 1<<24))
 				sCheck(errors.New("not implemented"))
 			},
 		},
-		"watch": {
+		"listen": {
 			local: true,
 			fn: func(n *node, w *proxy.Wrapper, r *http.Request) {
 				sCheck(errors.New("not implemented"))
@@ -381,23 +385,23 @@ func (n *node) serviceCommand(command string, realm, service string) (rerr error
 
 		switch command {
 		case "start":
-			log.Printf("starting service %v@%v...\n", s.Name, s.Realm)
+			log.Printf("starting service %v...\n", internal.ServiceName(s.Name, s.Realm))
 			return nil, pm.Start()
 
 		case "stop":
-			log.Printf("stopping service %v@%v...\n", s.Name, s.Realm)
+			log.Printf("stopping service %v...\n", internal.ServiceName(s.Name, s.Realm))
 			return nil, pm.Stop()
 
 		case "restart":
-			log.Printf("stopping service %v@%v...\n", s.Name, s.Realm)
+			log.Printf("stopping service %v...\n", internal.ServiceName(s.Name, s.Realm))
 			if err := pm.Stop(); err != nil {
 				return nil, err
 			}
-			log.Printf("starting service %v@%v...\n", s.Name, s.Realm)
+			log.Printf("starting service %v...\n", internal.ServiceName(s.Name, s.Realm))
 			return nil, pm.Start()
 
 		case "delete":
-			log.Printf("deleting service %v@%v...\n", s.Name, s.Realm)
+			log.Printf("deleting service %v...\n", internal.ServiceName(s.Name, s.Realm))
 			svc := pm.Service()
 			err := pm.Delete()
 			if err != nil {
@@ -745,3 +749,5 @@ func rsCheck(rerr, serr error) {
 		panic(handlerError{rerr, serr})
 	}
 }
+
+var publicPortStr = fmt.Sprintf(":%v", mess.PublicPort)

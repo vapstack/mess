@@ -314,11 +314,7 @@ func cmdMap(cmd *command) (int, error) {
 			} else {
 				rtype = "AUTO"
 			}
-			if svc.Realm != "" {
-				fmt.Printf("    %v@%v - %v - %v\n", svc.Name, svc.Realm, rtype, status)
-			} else {
-				fmt.Printf("    %v - %v - %v\n", svc.Name, rtype, status)
-			}
+			fmt.Printf("    %v - %v - %v\n", internal.ServiceName(svc.Name, svc.Realm), rtype, status)
 			if len(svc.Alias) > 0 {
 				fmt.Printf("    [%v]\n", strings.Join(svc.Alias, ", "))
 			}
@@ -432,6 +428,11 @@ func cmdPut(cmd *command) (int, error) {
 	}
 	s.Active = false
 
+	if node == "all" {
+		return cmd.eachNodeProgress(func(rec *mess.Node) error {
+			return cmd.call(rec.Address(), "put", s, nil)
+		}), nil
+	}
 	return cmd.nodeProgress(node).cover(func() error {
 		return cmd.call(cmd.addr(node), "put", s, nil)
 	}), nil

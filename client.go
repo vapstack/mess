@@ -22,9 +22,9 @@ func NewClient() *http.Client {
 // NewCustomClient creates a client targeting specific realm, node and/or service.
 // Empty realm is treated as the current realm.
 // Zero node and empty service are ignored.
-func NewCustomClient(realm string, node uint64, service string) *http.Client {
+func NewCustomClient(node uint64, realm string, service string) *http.Client {
 	return &http.Client{
-		Transport: NewCustomTransport(realm, node, service),
+		Transport: NewCustomTransport(node, realm, service),
 	}
 }
 
@@ -52,13 +52,13 @@ type RoundTripper struct {
 }
 
 func NewTransport() RoundTripper {
-	return NewCustomTransport("", 0, "")
+	return NewCustomTransport(0, "", "")
 }
 
 // NewCustomTransport creates a custom transport that can target specific realm, node and services.
 // Empty realm is treated as the current realm.
 // Since mess proxy supports h2c, NewCustomTransport creates an http2.Transport.
-func NewCustomTransport(realm string, node uint64, service string) RoundTripper {
+func NewCustomTransport(node uint64, realm string, service string) RoundTripper {
 	return RoundTripper{
 		Realm:   realm,
 		Node:    node,

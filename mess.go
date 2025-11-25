@@ -33,17 +33,17 @@ var (
 )
 
 type Node struct {
-	ID          uint64     `json:"id"`
-	Region      string     `json:"region"`
-	Country     string     `json:"country"`
-	Datacenter  string     `json:"datacenter"`
-	Addr        string     `json:"addr"`
-	Bind        string     `json:"bind"`
-	CertExpires int64      `json:"certExpires"`
-	Services    Services   `json:"services"`
-	LastSync    int64      `json:"lastSync,omitempty"`
-	Publish     PublishMap `json:"publish,omitempty"`
-	Consume     ConsumeMap `json:"consume,omitempty"`
+	ID          uint64     `json:"id"`          // node id in the mess
+	Region      string     `json:"region"`      // node location: region
+	Country     string     `json:"country"`     // node location: country
+	Datacenter  string     `json:"datacenter"`  // node location: datacenter
+	Addr        string     `json:"addr"`        // node address
+	Bind        string     `json:"bind"`        // bind interface (if set)
+	CertExpires int64      `json:"certExpires"` // certificate expiration date (unixtime)
+	Services    Services   `json:"services"`    // registered services
+	LastSync    int64      `json:"lastSync"`    // last sync time (unixtime)
+	Publish     PublishMap `json:"publish"`     // topics published by services running on this node
+	Listen      ListenMap  `json:"listen"`      // topics that services running on this node listen to
 
 	Meta map[string]string `json:"meta"` // any additional fields
 }
@@ -73,14 +73,13 @@ type LogRecord struct {
 
 /**/
 
+// NodeState holds information about the node and the cluster.
 type NodeState struct {
-	Node *Node   `json:"node,omitempty"`
-	Map  NodeMap `json:"map"`
+	// Node is the current state of the requested node.
+	Node *Node `json:"node,omitempty"`
+	// Map is a map of all known nodes in the cluster.
+	Map NodeMap `json:"map"`
 }
-
-// 1. клиент сам трекает, сервер только отдаёт откуда запросили
-// 2. --серввер трекает, но тогда нужно подтверждать как-то--
-// 3. клиентская либа трекает
 
 func (ns *NodeState) Clone() *NodeState {
 	x := &NodeState{
@@ -282,17 +281,17 @@ func (pm PublishMap) Has(realm, topic string) bool {
 	return ok
 }
 
-type ConsumeMap map[string][]string
+type ListenMap map[string][]string
 
-func (cm ConsumeMap) Clone() ConsumeMap {
-	x := make(ConsumeMap)
+func (cm ListenMap) Clone() ListenMap {
+	x := make(ListenMap)
 	for k, v := range cm {
 		x[k] = v
 	}
 	return x
 }
 
-func (cm ConsumeMap) Has(realm, topic string) bool {
+func (cm ListenMap) Has(realm, topic string) bool {
 	tl, ok := cm[realm]
 	if !ok {
 		return false

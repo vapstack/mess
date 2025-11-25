@@ -14,6 +14,7 @@ import (
 
 	"github.com/rosedblabs/rosedb/v2"
 	"github.com/vapstack/mess"
+	"github.com/vapstack/mess/internal"
 	"github.com/vapstack/monotime"
 )
 
@@ -117,7 +118,7 @@ func (n *node) writeLogs(realm, service string, msgs ...[]byte) {
 
 	db, err := n.openLog(realm, service)
 	if err != nil {
-		log.Printf("writing logs of %v@%v: db open: %v\n", service, realm, err)
+		log.Printf("writing logs of %v: db open: %v\n", internal.ServiceName(service, realm), err)
 		return
 	}
 
@@ -133,13 +134,13 @@ func (n *node) writeLogs(realm, service string, msgs ...[]byte) {
 		binary.BigEndian.PutUint64(key, uint64(db.seq.Next()))
 
 		if err = batch.PutWithTTL(key, bytes.TrimSpace(msg), logTTL); err != nil {
-			log.Printf("writing logs of %v@%v: batch error: %v\n", service, realm, err)
+			log.Printf("writing logs of %v: batch error: %v\n", internal.ServiceName(service, realm), err)
 			return
 		}
 	}
 
 	if err = batch.Commit(); err != nil {
-		log.Printf("writing logs of %v@%v: commit error: %v\n", service, realm, err)
+		log.Printf("writing logs of %v: commit error: %v\n", internal.ServiceName(service, realm), err)
 	}
 }
 
@@ -155,7 +156,7 @@ func (n *node) logsRequest(req *mess.LogsRequest) ([]mess.LogRecord, error) {
 		req.Realm = mess.ServiceName
 	} else {
 		if n.localServices.Load().getByRealmAndName(req.Realm, req.Service) == nil {
-			return nil, fmt.Errorf("service %v@%v not found", req.Service, req.Realm)
+			return nil, fmt.Errorf("service %v not found", internal.ServiceName(req.Service, req.Realm))
 		}
 	}
 
@@ -173,7 +174,7 @@ func (n *node) logsRequest(req *mess.LogsRequest) ([]mess.LogRecord, error) {
 	var key []byte
 
 	if req.Offset < 0 {
-		key, err = findOffset(db, req.Offset)
+		key, err = findNegativeOffset(db, req.Offset)
 		if err != nil {
 			return nil, err
 		}
@@ -220,7 +221,7 @@ func (n *node) logsStream(req *mess.LogsRequest) (Producer[mess.LogRecord], erro
 		req.Realm = mess.ServiceName
 	} else {
 		if n.localServices.Load().getByRealmAndName(req.Realm, req.Service) == nil {
-			return nil, fmt.Errorf("service %v@%v not found", req.Service, req.Realm)
+			return nil, fmt.Errorf("service %v not found", internal.ServiceName(req.Service, req.Realm))
 		}
 	}
 
@@ -232,7 +233,7 @@ func (n *node) logsStream(req *mess.LogsRequest) (Producer[mess.LogRecord], erro
 	var key []byte
 
 	if req.Offset < 0 {
-		key, dberr = findOffset(db, req.Offset)
+		key, dberr = findNegativeOffset(db, req.Offset)
 		if dberr != nil {
 			return nil, dberr
 		}
@@ -296,7 +297,7 @@ func (n *node) logsStream(req *mess.LogsRequest) (Producer[mess.LogRecord], erro
 	return producer, nil
 }
 
-func findOffset(db *dbval, offset int64) (key []byte, err error) {
+func findNegativeOffset(db *dbval, offset int64) (key []byte, err error) {
 	// DescendKeys returns only pattern-related errors
 	_ = db.DescendKeys(nil, false, func(k []byte) (bool, error) {
 		if len(k) != 8 {
@@ -305,8 +306,7 @@ func findOffset(db *dbval, offset int64) (key []byte, err error) {
 		}
 		key = k
 		offset++
-		return offset <= 0, nil
-		// offset + 1 because first element will be filtered out
+		return offset <= 0, nil // offset + 1 because first element will be filtered out
 	})
 	return
 }

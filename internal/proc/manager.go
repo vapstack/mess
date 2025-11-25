@@ -97,7 +97,7 @@ func NewManager(dev bool, nodeID uint64, svcroot string, hh http.HandlerFunc, s 
 	if !s.Manual {
 		err := pm.Start()
 		if err != nil {
-			pm.mgrLogs <- fmt.Errorf("failed to start %v@%v: %v", s.Name, s.Realm, err)
+			pm.mgrLogs <- fmt.Errorf("failed to start %v: %v", internal.ServiceName(s.Name, s.Realm), err)
 		}
 	}
 
@@ -206,7 +206,7 @@ func (pm *Manager) Start() error {
 			env = append(env, rep.Replace(s))
 		}
 		env = append(env, fmt.Sprintf("%v=%v", mess.EnvMode, "public")) //  mode))
-		env = append(env, fmt.Sprintf("%v=%v", mess.EnvNode, pm.node))
+		env = append(env, fmt.Sprintf("%v=%v", mess.EnvNodeID, pm.node))
 		env = append(env, fmt.Sprintf("%v=%v", mess.EnvRealm, svc.Realm))
 		env = append(env, fmt.Sprintf("%v=%v", mess.EnvService, svc.Name))
 		env = append(env, fmt.Sprintf("%v=%v", mess.EnvDataDir, pm.datadir))
@@ -244,7 +244,7 @@ func (pm *Manager) Start() error {
 	if !pm.dev {
 		go func(c *exec.Cmd) {
 			if e := c.Wait(); e != nil {
-				pm.mgrLogs <- fmt.Errorf("%v@%v exited with non-zero code: %v", svc.Name, svc.Realm, e)
+				pm.mgrLogs <- fmt.Errorf("%v exited with non-zero code: %v", internal.ServiceName(svc.Name, svc.Realm), e)
 			}
 			pm.running.Store(false)
 			go pm.autorestart(1)
@@ -261,7 +261,7 @@ func (pm *Manager) autorestart(backoff int) {
 			if backoff > 60 {
 				backoff = 60
 			} else {
-				pm.mgrLogs <- fmt.Errorf("failed to restart %v@%v: %v", s.Name, s.Realm, e)
+				pm.mgrLogs <- fmt.Errorf("failed to restart %v: %v", internal.ServiceName(s.Name, s.Realm), e)
 			}
 			<-time.After(time.Duration(backoff) * time.Second)
 			go pm.autorestart(backoff * 5)
@@ -282,7 +282,7 @@ func (pm *Manager) streamLogs(r io.Reader) {
 				break
 			}
 			s := pm.service.Load()
-			pm.mgrLogs <- fmt.Errorf("log scan error for %v@%v: %v", s.Name, s.Realm, err)
+			pm.mgrLogs <- fmt.Errorf("log scan error for %v: %v", internal.ServiceName(s.Name, s.Realm), err)
 			break
 		}
 	}
@@ -330,7 +330,7 @@ func (pm *Manager) Stop() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := pm.server.Shutdown(ctx); err != nil {
-			pm.mgrLogs <- fmt.Errorf("%v@%v: server shutdown error: %v", svc.Name, svc.Realm, err)
+			pm.mgrLogs <- fmt.Errorf("%v: server shutdown error: %v", internal.ServiceName(svc.Name, svc.Realm), err)
 		}
 		return nil
 	}
@@ -338,7 +338,7 @@ func (pm *Manager) Stop() error {
 	if pm.server != nil {
 		go func() {
 			if err := pm.server.Shutdown(context.Background()); err != nil {
-				pm.mgrLogs <- fmt.Errorf("%v@%v: server shutdown error: %v", svc.Name, svc.Realm, err)
+				pm.mgrLogs <- fmt.Errorf("%v: server shutdown error: %v", internal.ServiceName(svc.Name, svc.Realm), err)
 			}
 		}()
 	}
@@ -357,14 +357,14 @@ func (pm *Manager) Stop() error {
 	select {
 	case err := <-done:
 		if err != nil {
-			pm.mgrLogs <- fmt.Errorf("%v@%v: process shutdown error: %v", svc.Name, svc.Realm, err)
+			pm.mgrLogs <- fmt.Errorf("%v: process shutdown error: %v", internal.ServiceName(svc.Name, svc.Realm), err)
 		}
 
 	case <-time.After(time.Duration(timeout) * time.Second):
 		if err := proc.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
-			pm.mgrLogs <- fmt.Errorf("%v@%v: timeout reached, failed to kill process: %w", svc.Name, svc.Realm, err)
+			pm.mgrLogs <- fmt.Errorf("%v: timeout reached, failed to kill process: %w", internal.ServiceName(svc.Name, svc.Realm), err)
 		} else {
-			pm.mgrLogs <- fmt.Errorf("%v@%v: timeout reached, process killed", svc.Name, svc.Realm)
+			pm.mgrLogs <- fmt.Errorf("%v: timeout reached, process killed", internal.ServiceName(svc.Name, svc.Realm))
 		}
 		<-done
 	}
@@ -547,7 +547,7 @@ func (pm *Manager) createServiceOutgoingProxy(svc *mess.Service) (string, error)
 
 	go func() {
 		if e := pm.server.Serve(pm.listener); e != nil && !errors.Is(e, http.ErrServerClosed) {
-			pm.mgrLogs <- fmt.Errorf("%v@%v: http server error: %v", svc.Name, svc.Realm, e)
+			pm.mgrLogs <- fmt.Errorf("%v: http server error: %v", internal.ServiceName(svc.Name, svc.Realm), e)
 		}
 	}()
 

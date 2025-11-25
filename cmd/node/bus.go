@@ -175,14 +175,6 @@ func (n *node) publish(realm string, req *mess.PublishRequest) error {
 	return nil
 }
 
-// func (n *node) emit(realm, sender string, topic string, payload []byte) error {
-//
-// }
-//
-// func (n *node) emitEvents(realm, sender string, events []*mess.Event) error {
-//
-// }
-
 func (n *node) eventsRequest(req *mess.EventsRequest) ([]mess.Event, error) {
 
 	db, err := n.openBus(req.Realm, req.Topic, false)
@@ -197,6 +189,21 @@ func (n *node) eventsRequest(req *mess.EventsRequest) ([]mess.Event, error) {
 		req.Limit = 100
 	} else if req.Limit > 1000 {
 		req.Limit = 1000
+	}
+
+	if req.Offset == monotime.ZeroUUID {
+		// DescendKeys returns only pattern-related errors
+		_ = db.DescendKeys(nil, false, func(k []byte) (bool, error) {
+			if len(k) != 16 {
+				err = errors.New("invalid key len")
+				return false, err
+			}
+			req.Offset = monotime.UUID(k)
+			return false, nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("error getting last offset: %w", err)
+		}
 	}
 
 	var meta []mess.MetaField
@@ -230,8 +237,9 @@ func (n *node) eventsRequest(req *mess.EventsRequest) ([]mess.Event, error) {
 		}
 
 		events = append(events, mess.Event{
-			ID:    monotime.UUID(bytes.Clone(k)),
+			ID:    monotime.UUID(k),
 			Topic: req.Topic,
+			Meta:  slices.Clone(meta),
 			Data:  v[len(v)-r.Len():],
 		})
 
@@ -251,6 +259,22 @@ func (n *node) eventsStream(req *mess.EventsRequest) (Producer[mess.Event], erro
 		return nil, errors.New("topic not found")
 	}
 
+	if req.Offset == monotime.ZeroUUID {
+		var err error
+		// DescendKeys returns only pattern-related errors
+		_ = db.DescendKeys(nil, false, func(k []byte) (bool, error) {
+			if len(k) != 16 {
+				err = errors.New("invalid key len")
+				return false, err
+			}
+			req.Offset = monotime.UUID(k)
+			return false, nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("error getting last offset: %w", err)
+		}
+	}
+
 	producer := func(ctx context.Context, stream chan<- mess.Event) {
 
 		defer close(stream)
@@ -260,10 +284,12 @@ func (n *node) eventsStream(req *mess.EventsRequest) (Producer[mess.Event], erro
 
 		key := req.Offset
 
+		var err error
+
 		events := make([]mess.Event, 0, 64)
 
 		var meta []mess.MetaField
-		var err error
+
 		for {
 			firstHandled := false
 			db.AscendGreaterOrEqual(key[:], func(k []byte, v []byte) (bool, error) {
@@ -287,7 +313,7 @@ func (n *node) eventsStream(req *mess.EventsRequest) (Producer[mess.Event], erro
 					return false, err
 				}
 
-				key = monotime.UUID(bytes.Clone(k))
+				key = monotime.UUID(k)
 
 				if !metaMatch(meta, req.Filter) {
 					return true, nil
@@ -296,6 +322,7 @@ func (n *node) eventsStream(req *mess.EventsRequest) (Producer[mess.Event], erro
 				events = append(events, mess.Event{
 					ID:    key,
 					Topic: req.Topic,
+					Meta:  slices.Clone(meta),
 					Data:  v[len(v)-r.Len():], // rosedb returns a copy
 				})
 
@@ -330,6 +357,36 @@ func (n *node) eventsStream(req *mess.EventsRequest) (Producer[mess.Event], erro
 	}
 
 	return producer, nil
+}
+
+// func (n *node) emit(realm, sender string, topic string, payload []byte) error {
+//
+// }
+//
+// func (n *node) emitEvents(realm, sender string, events []*mess.Event) error {
+//
+// }
+//
+// func (n *node) receiveRequest(realm string, req *mess.SubscribeRequest) ([]mess.Event, error) {
+// 	return nil, fmt.Errorf("not implemented")
+// }
+
+func (n *node) eventProducerList(realm, topic string) []uint64 {
+	list := make([]uint64, 0)
+
+	if db, _ := n.openBus(realm, topic, false); db != nil {
+		list = append(list, n.id)
+	}
+
+	for _, remote := range n.state.Load().Map {
+		if remote.Publish.Has(realm, topic) {
+			list = append(list, remote.ID)
+		}
+	}
+
+	slices.Sort(list)
+
+	return list
 }
 
 func metaMatch(meta []mess.MetaField, filter []mess.MetaFilter) bool {
@@ -371,28 +428,6 @@ func metaMatch(meta []mess.MetaField, filter []mess.MetaFilter) bool {
 	return true
 }
 
-func (n *node) receiveRequest(realm string, req *mess.ReceiveRequest) ([]mess.Event, error) {
-	return nil, fmt.Errorf("not implemented")
-}
-
-func (n *node) eventProducerList(realm, topic string) []uint64 {
-	list := make([]uint64, 0)
-
-	if db, _ := n.openBus(realm, topic, false); db != nil {
-		list = append(list, n.id)
-	}
-
-	for _, remote := range n.state.Load().Map {
-		if remote.Publish.Has(realm, topic) {
-			list = append(list, remote.ID)
-		}
-	}
-
-	slices.Sort(list)
-
-	return list
-}
-
 func (n *node) hasNewProducers(realm, topic string, active []uint64) bool {
 	collected := n.eventProducerList(realm, topic)
 	return hasNewIDs(active, collected)
@@ -415,7 +450,7 @@ func hasNewIDs(oldids, newids []uint64) bool {
 	return j < len(newids)
 }
 
-func (n *node) collectEventProducers(realm string, req *mess.ReceiveRequest) ([]uint64, []Producer[mess.Event], error) {
+func (n *node) collectEventProducers(realm string, req *mess.SubscribeRequest) ([]uint64, []Producer[mess.Event], error) {
 
 	producers := make([]Producer[mess.Event], 0)
 	list := make([]uint64, 0)
@@ -427,8 +462,8 @@ func (n *node) collectEventProducers(realm string, req *mess.ReceiveRequest) ([]
 			Realm:  realm,
 			Topic:  req.Topic,
 			Offset: req.Cursor.ExtractNode(n.id),
-			Limit:  req.Limit,
-			Stream: req.Stream,
+			Limit:  0, // req.Limit,
+			Stream: true,
 			Filter: req.Filter,
 		})
 		if err != nil {
@@ -445,8 +480,8 @@ func (n *node) collectEventProducers(realm string, req *mess.ReceiveRequest) ([]
 				Realm:  realm,
 				Topic:  req.Topic,
 				Offset: req.Cursor.ExtractNode(remote.ID),
-				Limit:  req.Limit,
-				Stream: req.Stream,
+				Limit:  0, // req.Limit,
+				Stream: true,
 				Filter: req.Filter,
 			})
 			if err != nil {
@@ -456,6 +491,13 @@ func (n *node) collectEventProducers(realm string, req *mess.ReceiveRequest) ([]
 				list = append(list, remote.ID)
 			}
 		}
+	}
+
+	if len(producers) == 0 {
+		if len(errlist) > 0 {
+			return nil, nil, errlist[0]
+		}
+		return nil, nil, nil
 	}
 
 	slices.Sort(list)
@@ -473,25 +515,29 @@ func (n *node) remoteEventStream(tn *mess.Node, r *mess.EventsRequest) (Producer
 
 		defer close(ch)
 
+		buf := new(bytes.Buffer)
 		done := ctx.Done()
 		offset := r.Offset
 		backoff := time.Second
+		maxBackoff := 30 * time.Second
 
 		for {
 			if ctx.Err() != nil {
 				return
 			}
+
 			r.Offset = offset
 
-			var buf bytes.Buffer
-			if err := gob.NewEncoder(&buf).Encode(r); err != nil {
+			buf.Reset()
+
+			if err := gob.NewEncoder(buf).Encode(r); err != nil {
 				n.logf("remote stream: error encoding events request: %v", err)
 				return
 			}
 
-			dst := fmt.Sprintf("https://%v:%v/events", addr, mess.PublicPort)
+			dst := "https://" + addr + publicPortStr + "/events"
 
-			req, err := http.NewRequestWithContext(ctx, http.MethodPost, dst, &buf)
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, dst, buf)
 			if err != nil {
 				n.logf("remote stream: error building request to %v: %v", dst, err)
 				return
@@ -507,8 +553,9 @@ func (n *node) remoteEventStream(tn *mess.Node, r *mess.EventsRequest) (Producer
 					return
 				case <-time.After(backoff):
 				}
-				if backoff < 30*time.Second {
-					backoff *= 2
+				backoff *= 2
+				if backoff > maxBackoff {
+					backoff = maxBackoff
 				}
 				continue
 			}
@@ -554,11 +601,14 @@ func (n *node) remoteEventStream(tn *mess.Node, r *mess.EventsRequest) (Producer
 	return p, nil
 }
 
-func (n *node) receiveStream(realm string, req *mess.ReceiveRequest) (Producer[mess.Event], error) {
+func (n *node) subscriptionStream(realm string, req *mess.SubscribeRequest) (Producer[mess.Event], error) {
 
 	list, producers, err := n.collectEventProducers(realm, req)
 	if err != nil {
 		return nil, err
+	}
+	if len(producers) == 0 {
+		return nil, fmt.Errorf("no event producers found for topic %v", req.Topic)
 	}
 
 	p := func(ctx context.Context, out chan<- mess.Event) {
@@ -579,7 +629,7 @@ func (n *node) receiveStream(realm string, req *mess.ReceiveRequest) (Producer[m
 		// producers receive the same context and should cancel themselves
 
 		tick := time.NewTicker(time.Minute)
-		sent := uint64(0)
+		// sent := uint64(0)
 		for {
 			select {
 			case v, ok := <-stream:
@@ -588,13 +638,13 @@ func (n *node) receiveStream(realm string, req *mess.ReceiveRequest) (Producer[m
 				}
 				select {
 				case out <- v:
-					sent++
+					// sent++
 				case <-done:
 					return
 				}
-				if req.Limit > 0 && sent >= req.Limit {
-					return
-				}
+				// if req.Limit > 0 && sent >= req.Limit {
+				// 	return
+				// }
 			case <-tick.C:
 				if n.hasNewProducers(realm, req.Topic, list) {
 					return

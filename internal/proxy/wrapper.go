@@ -24,8 +24,7 @@ type (
 		Caller proxyArgs
 		Target proxyArgs
 
-		// Duration time.Duration
-		// InProto string
+		InProto string
 
 		Scheme string
 		Host   string
@@ -53,7 +52,7 @@ func Wrap(hw http.ResponseWriter, hr *http.Request) (*Wrapper, *http.Request) {
 		Start:  time.Now(),
 		Status: http.StatusOK,
 
-		// InProto: hr.Proto,
+		InProto: hr.Proto,
 	}
 
 	r := hr.WithContext(context.WithValue(hr.Context(), ctxProxyBaseKey, w))

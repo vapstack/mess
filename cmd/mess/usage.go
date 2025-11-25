@@ -47,7 +47,7 @@ var commandUsage = map[string][]string{
 
 	"put": {
 		"Update or create a service configuration from the provided file on a specified node",
-		"$ mess put <filename> <ip_addr|node_id>",
+		"$ mess put <filename> <ip_addr|node_id|all>",
 	},
 	"start": {
 		"Start a service on a node or on all nodes where the service exists",

@@ -90,3 +90,10 @@ func DrainAndCloseBody(res *http.Response) {
 		_ = res.Body.Close()
 	}
 }
+
+func ServiceName(service, realm string) string {
+	if realm == "" {
+		return service
+	}
+	return service + "@" + realm
+}

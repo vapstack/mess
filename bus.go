@@ -1,10 +1,12 @@
 package mess
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
+	"sync"
 	"sync/atomic"
 
 	"github.com/vapstack/monotime"
@@ -40,19 +42,29 @@ type (
 		Events []json.RawMessage `json:"events"`
 	}
 
+	SubscribeRequest struct {
+		Topic  string       `json:"topic"`
+		Cursor EventCursor  `json:"cursor"`
+		Filter []MetaFilter `json:"filter"`
+
+		// Limit  uint64 `json:"limit"`
+		// Stream bool   `json:"stream"`
+	}
+
+	MetaFilter struct {
+		Key string   `json:"key"`
+		Any []string `json:"any"`
+		Not []string `json:"not"`
+	}
+
 	EmitRequest struct {
 		Topic  string            `json:"topic"`
 		Meta   []MetaField       `json:"meta"`
 		Events []json.RawMessage `json:"events"`
 	}
 
-	ReceiveRequest struct {
-		Topic  string      `json:"topic"`
-		Cursor EventCursor `json:"cursor"`
-		Limit  uint64      `json:"limit"`
-		Stream bool        `json:"stream"`
-
-		Filter []MetaFilter `json:"filter"`
+	ListenRequest struct {
+		Topic string
 	}
 
 	EventsRequest struct {
@@ -60,15 +72,8 @@ type (
 		Topic  string        `json:"topic"`
 		Offset monotime.UUID `json:"offset"`
 		Limit  uint64        `json:"limit"`
+		Filter []MetaFilter  `json:"filter"`
 		Stream bool          `json:"stream"`
-
-		Filter []MetaFilter `json:"filter"`
-	}
-
-	MetaFilter struct {
-		Key string   `json:"key"`
-		Any []string `json:"any"`
-		Not []string `json:"not"`
 	}
 )
 
@@ -98,51 +103,64 @@ func (ec EventCursor) ExtractNode(id uint64) monotime.UUID {
 
 /**/
 
-// Subscription listens for published events and passes them to handler.
-// It automatically handles event cursor persistence.
-// For emitted events use Receiver.
+// Subscription represents a persistent event subscription on a single topic.
 type Subscription struct {
-	topic   string
-	stored  *boltcursor
-	handler func()
-	running atomic.Bool
+	api    API
+	topic  string
+	stored *boltCursor
+	mu     sync.Mutex
+	closed bool
 }
-
-/*
-	s.bus.Subscribe(vap.EventName[amk.UserCreated](), cursor, s.userCreated)
-*/
 
 // Receive dispatches new events to the provided handler.
-// If handler returns false, processing stops.
-// Otherwise, the event is considered handled and the subscription cursor is updated.
-// Receive does not block. Calling Receive multiple times on the same subscription results in error.
-// Only one active handler is allowed. Calling Receive multiple time with an already active handler is a no-op.
-func (s *Subscription) Receive(handler func(*Event) bool) (err error) {
-	if !s.running.CompareAndSwap(false, true) {
-		return errors.New("handler is already registered")
+// The optional filter is used for server-side filtering of incoming events.
+//
+// Receive blocks until one of the following happens:
+//   - the handler returns false, indicating that processing should stop;
+//   - the handler returns a non-nil error, which is then returned by Receive;
+//   - the context is canceled or reaches its deadline.
+//
+// Any panic in the handler is recovered and returned as an error.
+//
+// Subsequent calls to Receive on the same Subscription block until the
+// previous call has returned.
+func (s *Subscription) Receive(ctx context.Context, filter []MetaFilter, handler func(*Event) (bool, error)) (err error) {
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return errors.New("subscription is closed")
 	}
+
 	defer func() {
 		if p := recover(); p != nil {
-			err = fmt.Errorf("handler panic: %v", p)
+			err = fmt.Errorf("panic: %v", p)
 		}
-		s.running.Store(false)
 	}()
 
-	ok, herr := fn(event)
-	if herr != nil {
-		//
-	}
-	if !ok {
-		//
+	req := SubscribeRequest{
+		Topic:  s.topic,
+		Cursor: s.stored.get(),
+		Filter: filter,
 	}
 
+	return s.api.Subscribe(ctx, req, func(event *Event) (bool, error) {
+		ok, herr := handler(event)
+		if ok && herr == nil {
+			if serr := s.stored.update(event.ID); serr != nil {
+				return false, fmt.Errorf("error persisting cursor: %w", serr)
+			}
+		}
+		return ok, herr
+	})
 }
 
-// Cursor returns the current global position of the subscription.
-// This cursor can be used from any node to resume event processing
+// Cursor returns a snapshot of the current global position of the subscription.
+// The returned cursor can be used on any node to resume event processing
 // from the current position of this subscription.
 func (s *Subscription) Cursor() EventCursor {
-	return slices.Clone(s.stored.cursor)
+	return s.stored.get()
 }
 
 // Topic returns the subscription topic.
@@ -150,48 +168,28 @@ func (s *Subscription) Topic() string {
 	return s.topic
 }
 
-// Close closes the subscription file.
+// Close closes the underlying cursor store.
+// Close blocks until any active Receive calls return.
 func (s *Subscription) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil
+	}
+	s.closed = true
 	return s.stored.close()
 }
 
 /**/
 
-// Watcher listens for emitted events and passes them to handler.
-// It does not persist any state and receive only newly created events.
-// For published events, use Subscription.
-type Watcher struct {
-	topic   string
-	recv    chan *Event
-	running atomic.Bool
-}
-
-// Receive dispatches new events to the provided fn. If fn returns false, processing stops.
-// Receive does not block. Calling Receive multiple times on the same subscription results in error.
-func (r *Watcher) Receive(fn func(*Event) bool) (err error) {
-	defer func() {
-		if p := recover(); p != nil {
-			err = fmt.Errorf("handler panic: %v", p)
-		}
-		r.running.Store(false)
-	}()
-
-}
-
-func (r *Watcher) Close() {
-	//
-}
-
-/**/
-
-type boltcursor struct {
-	cursor EventCursor
+type boltCursor struct {
+	cursor atomic.Value
 	bolt   *bbolt.DB
 	buck   []byte
 	key    []byte
 }
 
-func newBoltCursor(topic string, start EventCursor, filename string) (*boltcursor, error) {
+func newBoltCursor(topic string, start EventCursor, filename string) (*boltCursor, error) {
 	bolt, err := bbolt.Open(filename, 0600, nil)
 	if err != nil {
 		return nil, fmt.Errorf("initialization error: %w", err)
@@ -202,7 +200,7 @@ func newBoltCursor(topic string, start EventCursor, filename string) (*boltcurso
 
 	var cur EventCursor
 
-	err = bolt.View(func(tx *bbolt.Tx) error {
+	err = bolt.Update(func(tx *bbolt.Tx) error {
 
 		b, err := tx.CreateBucketIfNotExists(buck)
 		if err != nil {
@@ -237,7 +235,7 @@ func newBoltCursor(topic string, start EventCursor, filename string) (*boltcurso
 			for _, id := range start {
 				v = append(v, id[:]...)
 			}
-			if err := tx.Bucket(buck).Put(key, v); err != nil {
+			if err := b.Put(key, v); err != nil {
 				return err
 			}
 			cur = start
@@ -246,28 +244,37 @@ func newBoltCursor(topic string, start EventCursor, filename string) (*boltcurso
 		return nil
 	})
 	if err != nil {
+		_ = bolt.Close()
 		return nil, err
 	}
 
-	m := &boltcursor{
-		cursor: cur,
-		bolt:   bolt,
-		buck:   buck,
-		key:    key,
+	m := &boltCursor{
+		bolt: bolt,
+		buck: buck,
+		key:  key,
 	}
+
+	m.cursor.Store(cur)
+
 	return m, nil
 }
 
-func (c *boltcursor) close() error {
+func (c *boltCursor) get() EventCursor {
+	return slices.Clone(c.cursor.Load().(EventCursor))
+}
+
+func (c *boltCursor) close() error {
 	return c.bolt.Close()
 }
 
-func (c *boltcursor) update(uuid monotime.UUID) error {
-	if uuid.Valid() {
+func (c *boltCursor) update(uuid monotime.UUID) error {
+	if !uuid.Valid() {
 		return fmt.Errorf("UUID is not valid")
 	}
 
-	c.cursor = c.cursor.Update(uuid)
+	cur := c.cursor.Load().(EventCursor).Update(uuid)
+
+	c.cursor.Store(cur)
 
 	tx, err := c.bolt.Begin(true)
 	if err != nil {
@@ -275,8 +282,8 @@ func (c *boltcursor) update(uuid monotime.UUID) error {
 	}
 	defer rollback(tx)
 
-	v := make([]byte, 0, len(c.cursor)*16)
-	for _, id := range c.cursor {
+	v := make([]byte, 0, len(cur)*16)
+	for _, id := range cur {
 		v = append(v, id[:]...)
 	}
 

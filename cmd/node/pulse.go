@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/gob"
-	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -49,7 +48,8 @@ func (n *node) pulse(rec *mess.Node, data []byte) {
 	ctx, cancel := context.WithTimeout(n.ctx, pulseInterval)
 	defer cancel()
 
-	dst := fmt.Sprintf("https://%v:%v/pulse", addr, mess.PublicPort)
+	dst := "https://" + addr + publicPortStr + "/pulse"
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, dst, bytes.NewReader(data))
 	if err != nil {
 		n.logf("pulse: creating request to %v: %v", dst, err)

@@ -7,15 +7,15 @@ servers, while having some basics out of the box.
 
 Those basics are currently:
 
-- Node manager with an API (certificate rotation, gossip, logging)
+- Node and cluster manager with an API (certificate rotation, gossip, logging)
 - Process manager with an API (control, deployment, logging)
 - Service mesh with TLS and automatic routing of HTTP traffic
 - Event bus, durable and ephemeral messaging
 
 > None of the above is production ready
 
-TODO:
+Planned:
 - Metrics collection
-
-Maybe:
+- Security audit
+- Distributed config
 - Pass additional streams to the binary (on Linux)

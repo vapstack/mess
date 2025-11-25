@@ -10,7 +10,7 @@ import (
 
 const (
 	EnvMode    = "MESS_MODE"
-	EnvNode    = "MESS_NODE"
+	EnvNodeID  = "MESS_NODE_ID"
 	EnvRealm   = "MESS_REALM"
 	EnvService = "MESS_SERVICE"
 	EnvDataDir = "MESS_DATA_DIR"
@@ -27,7 +27,7 @@ type Environment struct {
 	Dev bool
 	// Mode holds the value of the EnvMode variable.
 	Mode string
-	// NodeID is the unique identifier of the mess node, taken from EnvNode.
+	// NodeID is the unique identifier of the mess node, taken from EnvNodeID.
 	NodeID uint64
 	// Service holds the service name from EnvService.
 	Service string
@@ -66,7 +66,7 @@ func init() {
 		Proxy:   os.Getenv(EnvProxy),
 	}
 
-	env.NodeID, _ = strconv.ParseUint(os.Getenv(EnvNode), 10, 64)
+	env.NodeID, _ = strconv.ParseUint(os.Getenv(EnvNodeID), 10, 64)
 
 	env.ProxyNetwork, env.ProxyAddr, _ = internal.ParseNetworkAddr(env.Proxy)
 }

@@ -408,7 +408,7 @@ func (n *node) runServices() {
 		// }
 
 		if err := n.runService(s); err != nil {
-			n.logf("failed to initialize process manager for %v@%v: %v", s.Name, s.Realm, err)
+			n.logf("failed to initialize process manager for %v: %v", internal.ServiceName(s.Name, s.Realm), err)
 			continue
 		}
 		// pm, err := proc.NewManager(n.dev, n.svcdir, s) // newPM(n, s)
@@ -425,11 +425,11 @@ func (n *node) runServices() {
 
 func (n *node) runService(s *mess.Service) error {
 
-	log.Printf("starting process manager for %v@%v...\n", s.Name, s.Realm)
+	log.Printf("starting process manager for %v...\n", internal.ServiceName(s.Name, s.Realm))
 
 	rm := *n.localServices.Load()
 	if rm.get(s) != nil {
-		return fmt.Errorf("service %v@%v is already running", s.Name, s.Realm)
+		return fmt.Errorf("service %v is already running", internal.ServiceName(s.Name, s.Realm))
 	}
 
 	xm := rm.clone()
@@ -515,11 +515,11 @@ func (n *node) stopServices() {
 		wasRunning := !pm.Running()
 
 		s := pm.Service()
-		log.Printf("closing process manager for %v@%v...\n", s.Name, s.Realm)
+		log.Printf("closing process manager for %v...\n", internal.ServiceName(s.Name, s.Realm))
 
 		if err := pm.Shutdown(); err != nil {
 			if wasRunning {
-				n.logf("shutting down %v@%v: %v", s.Name, s.Realm, err)
+				n.logf("shutting down %v: %v", internal.ServiceName(s.Name, s.Realm), err)
 			}
 		}
 	}
@@ -640,7 +640,7 @@ func (n *node) close() error {
 	n.busdb.Range(func(key, db any) bool {
 		k := key.(dkey)
 		if err := db.(*dbval).Close(); err != nil {
-			n.logf("error closing bus db for topic %v@%v: %v", k.name, k.realm, err)
+			n.logf("error closing bus db for topic %v: %v", internal.ServiceName(k.name, k.realm), err)
 			// log.Printf("error closing bus db for topic %v@%v: %v", k.name, k.realm, e)
 		}
 		return true
@@ -653,7 +653,7 @@ func (n *node) close() error {
 		n.logdb.Range(func(key, db any) bool {
 			k := key.(dkey)
 			if e := db.(*dbval).Close(); e != nil {
-				log.Printf("error closing log db for %v@%v: %v", k.name, k.realm, e)
+				log.Printf("error closing log db for %v: %v", internal.ServiceName(k.name, k.realm), e)
 			}
 			return true
 		})
@@ -696,7 +696,7 @@ func (n *node) deleteService(s *mess.Service) error {
 	n.updateLocalServices(rm)
 
 	if err := n.deleteLog(s.Realm, s.Name); err != nil {
-		n.logf("error deleting log db for %v@%v: %v", s.Name, s.Realm, err)
+		n.logf("error deleting log db for %v: %v", internal.ServiceName(s.Name, s.Realm), err)
 	}
 
 	return nil

@@ -1,52 +1,47 @@
 package mess
 
 import (
-	"bytes"
 	"context"
 	"encoding/gob"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"log"
 	"net/http"
-	"net/url"
-	"strconv"
+	"os"
+	"time"
 
 	"github.com/vapstack/mess/internal"
 )
 
-func State(ctx context.Context) (*NodeState, error) {
-	return api.State(ctx)
-}
-func Publish(ctx context.Context, req PublishRequest) error {
-	return api.Publish(ctx, req)
-}
-func Emit(ctx context.Context, req EmitRequest) error {
-	return api.Emit(ctx, req)
-}
+// State is helper for API.State
+func State(ctx context.Context) (*NodeState, error) { return api.State(ctx) }
 
-type API struct {
-	Client     *http.Client
-	BatchDelay int
-}
+// Publish is helper for API.Publish
+func Publish(ctx context.Context, req PublishRequest) error { return api.Publish(ctx, req) }
 
-var api = &API{
-	Client: NewClient(),
-}
+// Emit is helper for API.Emit
+func Emit(ctx context.Context, req EmitRequest) error { return api.Emit(ctx, req) }
 
+// API provides methods to interact with mess node.
+type API struct{ *http.Client }
+
+var api = API{Client: NewClient()}
+
+// State returns a state of the current node along with a map of the cluster.
 func (a API) State(ctx context.Context) (*NodeState, error) {
 	nd := new(NodeState)
 	return nd, a.send(ctx, "/state", nil, nd)
 }
 
-// func (a API) MustPublish(topic string, payload []byte) {
-// 	err := a.Publish(context.Background(), topic, payload)
-// 	if err != nil {
-// 		panic(err)
-// 	}
-// }
-
+// Publish publishes the provided events on the specified topic.
+// Meta fields, if specified, will be stored with each event.
+// Publish guarantees that either all the provided events are stored or none.
+// If a nil error is returned, all events are successfully published.
 func (a API) Publish(ctx context.Context, req PublishRequest) error {
 	if req.Topic == "" {
-		return fmt.Errorf("topic is empty")
+		return errors.New("topic is empty")
 	}
 	if len(req.Events) == 0 {
 		return nil
@@ -59,92 +54,214 @@ func (a API) Publish(ctx context.Context, req PublishRequest) error {
 	return a.send(ctx, "/publish", req, nil)
 }
 
-func (a API) Emit(ctx context.Context, req EmitRequest) error {
-	return fmt.Errorf("not implemented")
-}
-
-func (a API) Subscribe(ctx context.Context, topic string, cursor EventCursor, fn func(*Event) (bool, error)) error {
-
-	return nil
-}
-
-type SubscriptionOptions struct {
-	Topic    string
-	Cursor   EventCursor
-	FileName string
-	Handler  func(*Event) bool
-	Filter   []MetaFilter
-}
-
-// OpenSubscription opens or creates a persistent Subscription to the provided topic.
+// Subscribe receives events from the specified topic using the provided cursor as an offset.
+// If the cursor is nil or empty, the subscription starts from the most recent events.
+// An optional filter is used for server-side filtering of incoming events.
 //
+// The handler is called for each event. If the handler returns false or a non-nil error,
+// processing stops and the error is returned.
+//
+// Subscribe transparently reconnects with exponential backoff if needed.
+// Connection errors do not stop processing; they are logged using the standard log package.
+//
+// If the context is canceled or expires, Subscribe waits until the currently running
+// handler returns, then stops processing and returns the context error.
+//
+// Subscribe blocks until the context is canceled or expires,
+// or the handler returns false or a non-nil error.
+//
+// Subscribe does not provide cursor persistence; use CreateSubscription for that.
+func (a API) Subscribe(ctx context.Context, req SubscribeRequest, handler func(*Event) (bool, error)) error {
+
+	if req.Topic == "" {
+		return errors.New("topic is empty")
+	}
+
+	buf := getbuf()
+	defer putbuf(buf)
+
+	const (
+		minBackoff = time.Second
+		maxBackoff = 30 * time.Second
+	)
+
+	backoff := minBackoff
+
+	dst := "http://mess/subscribe"
+
+	done := ctx.Done()
+
+	for {
+
+		buf.Reset()
+
+		if err := gob.NewEncoder(buf).Encode(req); err != nil {
+			return fmt.Errorf("request encode error: %w", err)
+		}
+
+		r, err := http.NewRequestWithContext(ctx, http.MethodPost, dst, buf)
+		if err != nil {
+			return fmt.Errorf("error building request: %w", err)
+		}
+		r.Header["Content-Type"] = gobContentType
+
+		res, err := a.Client.Do(r)
+		if err != nil {
+
+			if err = ctx.Err(); err != nil {
+				return err
+			}
+			log.Printf("mess: Subscribe: request error: %v\n", err)
+
+			select {
+			case <-done:
+				return ctx.Err()
+			case <-time.After(backoff):
+				if backoff *= 2; backoff > maxBackoff {
+					backoff = maxBackoff
+				}
+			}
+			continue
+		}
+
+		if res.StatusCode >= 300 {
+			b, _ := io.ReadAll(res.Body)
+			_ = res.Body.Close()
+
+			if len(b) == 0 {
+				log.Printf("mess: Subscribe: status error: %v (no body)\n", res.StatusCode)
+			} else {
+				log.Printf("mess: Subscribe: status error: %v, body: %v\n", res.StatusCode, string(b))
+			}
+
+			select {
+			case <-done:
+				return ctx.Err()
+			case <-time.After(backoff):
+				if backoff *= 2; backoff > maxBackoff {
+					backoff = maxBackoff
+				}
+			}
+			continue
+		}
+
+		backoff = minBackoff
+
+		next, err := func() (bool, error) {
+			defer internal.DrainAndCloseBody(res)
+
+			dec := gob.NewDecoder(res.Body)
+
+			for {
+				var ev Event
+				if err := dec.Decode(&ev); err != nil {
+					if !errors.Is(err, io.EOF) {
+						log.Printf("mess: Subscribe: decode error: %v", err)
+					}
+					return true, nil
+				}
+
+				next, err := handler(&ev)
+				if err != nil {
+					return next, err
+				}
+				if !next {
+					return next, nil
+				}
+
+				req.Cursor = req.Cursor.Update(ev.ID)
+			}
+		}()
+		if err != nil {
+			return err
+		}
+		if !next {
+			return nil
+		}
+		if err = ctx.Err(); err != nil {
+			return err
+		}
+
+		select {
+		case <-done:
+			return ctx.Err()
+		case <-time.After(backoff):
+			if backoff *= 2; backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		}
+	}
+}
+
+var ErrSubscriptionNotExists = errors.New("subscription does not exist")
+
+// OpenSubscription opens a previously created persistent Subscription.
 // Subscription automatically manages cursor persistence and resumes processing from where it left off.
 //
-// If the file does not exist, the provided cursor is used as a starting position,
-// if cursor is nil, subscription starts from the current position (most recent events).
-// If the file exists, the cursor is not used.
-// If the topic stored in the file does not match the provided topic, an error is returned.
-//
-// If a nil error is returned, Subscription immediately starts processing events
-// dispatching them to the provided handler. Processing is strictly sequential.
-// If the handler returns false, processing stops.
-// Otherwise, the event is considered handled and the subscription cursor is updated.
-func (a API) OpenSubscription(topic string, cursor EventCursor, filename string, handler func(*Event) bool) (*Subscription, error) {
-	c, err := newBoltCursor(topic, cursor, filename)
+// If the file does not exist, an error is returned; CreateSubscription should be used to create a new one.
+func (a API) OpenSubscription(topic string, filename string) (*Subscription, error) {
+
+	if _, err := os.Stat(filename); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, ErrSubscriptionExists
+		}
+		return nil, fmt.Errorf("file stat error: %w", err)
+	}
+
+	c, err := newBoltCursor(topic, nil, filename)
 	if err != nil {
 		return nil, err
 	}
+
 	s := &Subscription{
+		api:    a,
 		topic:  topic,
 		stored: c,
 	}
 	return s, nil
 }
 
-/*func (a API) publish(ctx context.Context, topic string, data []json.RawMessage) error {
-	req := defaultRequest.WithContext(ctx)
+var ErrSubscriptionExists = errors.New("subscription already exists")
 
-	req.URL = &url.URL{
-		Scheme: "http",
-		Host:   "mess",
-		Path:   "/publish/" + topic,
-	}
-	req.Host = "mess"
-	req.Header = make(http.Header, 4)
+// CreateSubscription creates a persistent Subscription to the provided topic.
+// Subscription automatically manages cursor persistence and resumes processing from where it left off.
+//
+// The provided cursor is used as a starting position (offset).
+// If cursor is nil or empty, the subscription starts from the most recent events.
+//
+// If the file exists, an error is returned; OpenSubscription should be used to open an existing one.
+func (a API) CreateSubscription(filename string, topic string, cursor EventCursor) (*Subscription, error) {
 
-	buf := getbuf()
-	defer putbuf(buf)
-
-	if err := gob.NewEncoder(buf).Encode(data); err != nil {
-		return fmt.Errorf("encode error: %w", err)
-	}
-	a.send()
-
-	req.Body = io.NopCloser(bytes.NewReader(data))
-	req.ContentLength = int64(len(data))
-	req.GetBody = func() (io.ReadCloser, error) {
-		r := bytes.NewReader(data)
-		return io.NopCloser(r), nil
-	}
-
-	res, err := a.Client.Do(req)
-	if err != nil {
-		return fmt.Errorf("request: %w", err)
-	}
-	defer func(rsp *http.Response) {
-		_, _ = io.Copy(io.Discard, rsp.Body)
-		_ = rsp.Body.Close()
-	}(res)
-
-	if res.StatusCode >= 300 {
-		b, e := io.ReadAll(res.Body)
-		if e != nil {
-			return fmt.Errorf("status error: %v, cannot read body: %w", res.StatusCode, e)
+	if _, err := os.Stat(filename); err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("file stat error: %w", err)
 		}
-		return fmt.Errorf("status error: %v, body: %v", res.StatusCode, string(b))
+
+	} else {
+		return nil, ErrSubscriptionExists
 	}
-	return nil
-}*/
+
+	c, err := newBoltCursor(topic, cursor, filename)
+	if err != nil {
+		return nil, err
+	}
+
+	s := &Subscription{
+		api:    a,
+		topic:  topic,
+		stored: c,
+	}
+
+	return s, nil
+}
+
+func (a API) Emit(ctx context.Context, req EmitRequest) error {
+	return fmt.Errorf("not implemented")
+}
+
+func (a API) Listen(ctx context.Context, topic string) (<-chan *Event, error) {
+	return nil, fmt.Errorf("not implemented")
+}
 
 func (a API) send(ctx context.Context, endpoint string, request, response any) error {
 
@@ -157,7 +274,14 @@ func (a API) send(ctx context.Context, endpoint string, request, response any) e
 		}
 	}
 
-	req := newRequest(ctx, endpoint, buf)
+	dst := "http://mess" + endpoint
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, dst, buf)
+	if err != nil {
+		return fmt.Errorf("error building request: %w", err)
+	}
+
+	req.Header["Content-Type"] = gobContentType
 
 	res, err := a.Client.Do(req)
 	if err != nil {
@@ -166,9 +290,9 @@ func (a API) send(ctx context.Context, endpoint string, request, response any) e
 	defer internal.DrainAndCloseBody(res)
 
 	if res.StatusCode >= 300 {
-		b, e := io.ReadAll(res.Body)
-		if e != nil {
-			return fmt.Errorf("status error: %v, cannot read body: %w", res.StatusCode, e)
+		b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<10))
+		if len(b) == 0 {
+			return fmt.Errorf("status error: %v (no body)", res.StatusCode)
 		}
 		return fmt.Errorf("status error: %v, body: %v", res.StatusCode, string(b))
 	}
@@ -182,41 +306,3 @@ func (a API) send(ctx context.Context, endpoint string, request, response any) e
 }
 
 var gobContentType = []string{"application/gob"}
-
-func newRequest(ctx context.Context, endpoint string, body *bytes.Buffer) *http.Request {
-	req := defaultRequest.WithContext(ctx)
-
-	req.URL = &url.URL{
-		Scheme: "http",
-		Host:   "mess",
-		Path:   endpoint,
-	}
-	req.Host = "mess"
-
-	req.Header = http.Header{
-		"Content-Type": gobContentType,
-	}
-
-	if nodeID, ok := targetNodeFromContext(ctx); ok {
-		req.Header.Set(TargetNodeHeader, strconv.FormatUint(nodeID, 10))
-	}
-	if realm, ok := targetRealmFromContext(ctx); ok {
-		req.Header.Set(TargetRealmHeader, realm)
-	}
-
-	if body != nil {
-		req.Body = io.NopCloser(body)
-		req.ContentLength = int64(body.Len())
-		buf := body.Bytes()
-		req.GetBody = func() (io.ReadCloser, error) {
-			r := bytes.NewReader(buf)
-			return io.NopCloser(r), nil
-		}
-	}
-
-	return req
-}
-
-var defaultRequest = &http.Request{
-	Method: http.MethodPost,
-}
