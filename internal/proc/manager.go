@@ -227,6 +227,9 @@ func (pm *Manager) Start() error {
 			return fmt.Errorf("start failed: %w", err)
 		}
 
+		oomPath := filepath.Join("/proc", strconv.Itoa(cmd.Process.Pid), "oom_score_adj")
+		_ = os.WriteFile(oomPath, []byte("0"), 0640)
+
 		go pm.streamLogs(stdout)
 		go pm.streamLogs(stderr)
 	}

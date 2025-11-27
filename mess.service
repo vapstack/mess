@@ -1,0 +1,73 @@
+[Unit]
+
+Description=mess
+
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+
+ExecStart=/opt/mess/node
+Restart=always
+RestartSec=5s
+
+KillSignal=SIGTERM
+
+# TimeoutStopSec=0 disables the timeout.
+# If the mess itself (not children) hangs on SIGTERM, systemd will wait forever.
+TimeoutStopSec=0
+
+# Run as a specific user
+# User=messuser
+# Group=messuser
+
+# Allow binding to privileged ports
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+# --- Security: Privilege escalation prevention ---
+# Prevents sudo, suid binaries, and user switching.
+# Child processes cannot gain root privileges.
+NoNewPrivileges=yes
+
+# --- Security: Anti-debugging & hardening ---
+RestrictPtrace=yes
+RestrictBPF=yes
+SystemCallFilter=~ptrace
+SystemCallFilter=~bpf
+
+# --- Security: Kernel protection ---
+# Prevent loading kernel modules
+ProtectKernelModules=yes
+# Prevent modifying kernel runtime parameters (sysctl)
+ProtectKernelTunables=yes
+# Prevent changing system hostname
+ProtectHostname=yes
+# Prevent changing system clock
+ProtectClock=yes
+# Lock execution domain (prevents personality changes like 32bit emulation)
+LockPersonality=yes
+
+# Ensure only native architecture binaries are executed
+SystemCallArchitectures=native
+
+# --- Filesystem Access ---
+# 'full' makes /usr, /boot, and /etc read-only.
+# /tmp, /var, /home, /run remain writable.
+ProtectSystem=full
+
+# --- Resources & limits ---
+LimitNOFILE=infinity
+TasksMax=infinity
+
+# --- OOM Handling ---
+# -500 makes node very unlikely to be killed by OOM Killer.
+# It protects the orchestrator, for child processes /proc/PID/oom_score_adj will be reset during start.
+OOMScoreAdjust=-500
+
+# --- IPC / Shared memory ---
+# Important for in-memory databases (e.g. Redis, Postgres w/ shared buffers).
+# Prevents systemd from cleaning up shared memory segments on restart.
+RemoveIPC=no
+
+[Install]
+WantedBy=multi-user.target
