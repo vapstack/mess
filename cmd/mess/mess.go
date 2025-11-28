@@ -102,9 +102,18 @@ func main() {
 
 	cmd := parseCommand(os.Args[1:])
 
-	if len(os.Args) < 3 && cmd.name != "sync" && cmd.name != "map" && cmd.name != "rec" {
-		printCommandUsage(os.Args[1], 0)
-		return
+	noArgs := map[string]struct{}{
+		"sync":   {},
+		"map":    {},
+		"rec":    {},
+		"rotate": {},
+	}
+
+	if len(os.Args) < 3 {
+		if _, ok := noArgs[cmd.name]; !ok {
+			printCommandUsage(os.Args[1], 0)
+			return
+		}
 	}
 	cmd.mess = m
 
@@ -304,6 +313,9 @@ func (cmd *command) applyState(state *mess.NodeState, addr string) error {
 func (cmd *command) eachNodeProgress(fn func(rec *mess.Node) error) int {
 	ec := 0
 	for _, rec := range cmd.mess.state.Map {
+		if cmd.ctx.Err() != nil {
+			return ec
+		}
 		ec += nodeProgress(rec).cover(func() error { return fn(rec) })
 	}
 	return ec
