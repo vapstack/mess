@@ -390,10 +390,8 @@ func (pm *Manager) Store(filename string) error {
 	}
 	defer func() { _ = f.Close() }()
 
-	if s, serr := f.Stat(); serr != nil {
+	if _, err = f.Stat(); err != nil {
 		return err
-	} else if s.Size() < 1<<20 {
-		return fmt.Errorf("file too small: %v", s.Size())
 	}
 
 	d := make([]byte, 16)
