@@ -185,6 +185,8 @@ func cmdRotate(cmd *command) (int, error) {
 
 	updated := 0
 
+	lazySync(cmd)
+
 	ec := cmd.eachNodeProgress(func(rec *mess.Node) error {
 
 		if !force && time.Unix(rec.CertExpires, 0).AddDate(0, 0, -days).After(time.Now()) {
@@ -277,6 +279,14 @@ func cmdSync(cmd *command) (int, error) {
 		return cmd.fetchState(rec.Address())
 	})
 	return ec, nil
+}
+
+func lazySync(cmd *command) {
+	fmt.Println("[ SYNC ]")
+	cmd.eachNodeProgress(func(rec *mess.Node) error {
+		return cmd.fetchState(rec.Address())
+	})
+	fmt.Println("[ DONE ]")
 }
 
 func cmdMap(cmd *command) (int, error) {
@@ -386,6 +396,8 @@ func cmdUpgrade(cmd *command) (int, error) {
 
 	ec := 0
 	if node == "all" {
+		lazySync(cmd)
+
 		ec = cmd.eachNodeProgress(func(rec *mess.Node) error {
 			if e := cmd.post(rec.Address(), "upgrade", "", file); e != nil {
 				return e
@@ -417,6 +429,7 @@ func cmdShutdown(cmd *command) (int, error) {
 	node := cmd.args[0]
 
 	if node == "all" {
+		lazySync(cmd)
 		return cmd.eachNodeProgress(func(rec *mess.Node) error {
 			return cmd.call(rec.Address(), "shutdown", nil, nil)
 		}), nil
@@ -459,6 +472,7 @@ func cmdPut(cmd *command) (int, error) {
 	s.Active = false
 
 	if node == "all" {
+		lazySync(cmd)
 		return cmd.eachNodeProgress(func(rec *mess.Node) error {
 			return cmd.call(rec.Address(), "put", s, nil)
 		}), nil
@@ -484,6 +498,7 @@ func cmdServiceCommand(cmd *command) (int, error) {
 	ep := fmt.Sprintf("%v?service=%v&realm=%v", cmd.name, realm, service)
 
 	if node == "all" {
+		lazySync(cmd)
 		return cmd.eachNodeProgress(func(rec *mess.Node) error {
 			return cmd.call(rec.Address(), ep, nil, nil)
 		}), nil
@@ -524,6 +539,7 @@ func cmdDeploy(cmd *command) (int, error) {
 	}
 
 	if node == "all" {
+		lazySync(cmd)
 		return cmd.eachNodeProgress(func(rec *mess.Node) error {
 			if err := cmd.post(rec.Address(), "store", qry, file); err != nil {
 				return err
