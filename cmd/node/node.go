@@ -790,12 +790,17 @@ type (
 func closeFile(f *os.File) {
 	n := f.Name()
 	if err := f.Close(); err != nil {
-		log.Printf("error closing %v: %v\n", n, err)
+		s := err.Error()
+		if !strings.Contains(s, "file already closed") {
+			log.Printf("error closing %v: %v\n", n, err)
+		}
 	}
 }
 
 func removeFile(name string) {
 	if err := os.Remove(name); err != nil {
-		log.Printf("error removing %v: %v\n", name, err)
+		if !errors.Is(err, os.ErrNotExist) {
+			log.Printf("error removing %v: %v\n", name, err)
+		}
 	}
 }
