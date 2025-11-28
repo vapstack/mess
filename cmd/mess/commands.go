@@ -116,6 +116,7 @@ func cmdNew(cmd *command) (int, error) {
 
 	return 0, nil
 }
+
 func cmdGen(cmd *command) (int, error) {
 
 	if len(cmd.args) != 1 {
@@ -239,7 +240,10 @@ func cmdAdd(cmd *command) (int, error) {
 			return err
 		}
 		if state.Node == nil {
-			return fmt.Errorf("no node information returned")
+			return fmt.Errorf("no state information returned by the node (invalid response)")
+		}
+		if state.Node.ID == 0 {
+			return fmt.Errorf("node is running with id 0, such id cannot be used by a node (invalid id)")
 		}
 		for id := range cmd.mess.state.Map {
 			if id == state.Node.ID {
@@ -282,11 +286,40 @@ func cmdSync(cmd *command) (int, error) {
 }
 
 func lazySync(cmd *command) {
-	fmt.Println("[ SYNC ]")
-	cmd.eachNodeProgress(func(rec *mess.Node) error {
-		return cmd.fetchState(rec.Address())
-	})
-	fmt.Println("[ DONE ]")
+	pp := pstartf("Sync: ")
+	defer func() {
+		if v := recover(); v != nil {
+			pp.fail(fmt.Errorf("panic: %v", v))
+		}
+	}()
+
+	ids := make([]uint64, 0, len(cmd.mess.state.Map))
+	for id := range cmd.mess.state.Map {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+
+	var failed []string
+	total := len(ids)
+	padding := len(strconv.Itoa(total))
+	for i, id := range ids {
+		if err := cmd.ctx.Err(); err != nil {
+			pp.fail(err)
+			return
+		}
+		rec := cmd.mess.state.Map[id]
+		pp.printf("Sync: %*v/%v - %v - %v", padding, i, total, rec.ID, rec.Address())
+		if err := cmd.fetchState(rec.Address()); err != nil {
+			failed = append(failed, strconv.FormatUint(rec.ID, 10))
+		}
+	}
+
+	pp.printf(fmt.Sprintf("Sync: %*v/%v", padding, total-len(failed), total))
+	if len(failed) > 0 {
+		pp.warn(fmt.Sprintf("unreachable: %v", strings.Join(failed, ", ")))
+	} else {
+		pp.ok()
+	}
 }
 
 func cmdMap(cmd *command) (int, error) {

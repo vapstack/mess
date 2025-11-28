@@ -42,6 +42,7 @@ func main() {
 	binPath := filepath.Dir(binName)
 
 	m := &messConfig{
+		path:     binPath,
 		messFile: filepath.Join(binPath, "mess.json"),
 	}
 
@@ -185,6 +186,7 @@ type messState struct {
 }
 
 type messConfig struct {
+	path     string
 	messFile string
 
 	keyBytes []byte
@@ -202,11 +204,11 @@ func (mc *messConfig) saveMess() error {
 }
 
 func (mc *messConfig) loadNodeCert() ([]byte, []byte, error) {
-	keyBytes, e := internal.ReadFile("node.key")
+	keyBytes, e := internal.ReadFile(filepath.Join(mc.path, "node.key"))
 	if e != nil {
 		return nil, nil, fmt.Errorf("reading node.key: %w", e)
 	}
-	crtBytes, e := internal.ReadFile("node.crt")
+	crtBytes, e := internal.ReadFile(filepath.Join(mc.path, "node.crt"))
 	if e != nil {
 		return nil, nil, fmt.Errorf("reading node.crt: %w", e)
 	}
@@ -312,10 +314,16 @@ func (cmd *command) applyState(state *mess.NodeState, addr string) error {
 
 func (cmd *command) eachNodeProgress(fn func(rec *mess.Node) error) int {
 	ec := 0
-	for _, rec := range cmd.mess.state.Map {
+	ids := make([]uint64, 0, len(cmd.mess.state.Map))
+	for id := range cmd.mess.state.Map {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	for _, id := range ids {
 		if cmd.ctx.Err() != nil {
 			return ec
 		}
+		rec := cmd.mess.state.Map[id]
 		ec += nodeProgress(rec).cover(func() error { return fn(rec) })
 	}
 	return ec
@@ -405,7 +413,10 @@ func (cmd *command) calltype(ctype, host, endpoint string, data any, result any)
 		}
 	}
 
-	req, err := http.NewRequestWithContext(cmd.ctx, http.MethodPost, dst, buf)
+	ctx, cancel := context.WithTimeout(cmd.ctx, 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, dst, buf)
 	if err != nil {
 		return err
 	}
@@ -620,8 +631,9 @@ func signatureHeader(key ed25519.PrivateKey) string {
 
 const (
 	colorReset    = "\033[0m"
-	colorProgress = "\033[97m"
-	colorError    = "\033[31m"
+	colorProgress = "\033[1;97m"
+	colorError    = "\033[1;91m"
+	colorWarn     = "\033[1;93m"
 	colorSkip     = "\033[90m"
 	cleanReturn   = "\033[F\033[2K"
 )
@@ -649,8 +661,17 @@ func (p *pprinter) startf(format string, args ...any) {
 	fmt.Printf("%s[  >>  ] %s%s\n", colorProgress, p.lastMessage, colorReset)
 }
 
-func (p *pprinter) ok() {
-	fmt.Printf("%s[  OK  ] %s\n", cleanReturn, p.lastMessage)
+func (p *pprinter) printf(format string, args ...any) {
+	p.lastMessage = fmt.Sprintf(format, args...)
+	fmt.Printf("%s%s[  >>  ] %s%s\n", cleanReturn, colorProgress, p.lastMessage, colorReset)
+}
+
+func (p *pprinter) ok(override ...string) {
+	if len(override) == 0 {
+		fmt.Printf("%s[  OK  ] %s\n", cleanReturn, p.lastMessage)
+	} else {
+		fmt.Printf("%s[  OK  ] %s\n", cleanReturn, override[0])
+	}
 }
 
 func (p *pprinter) skip() {
@@ -659,7 +680,12 @@ func (p *pprinter) skip() {
 
 func (p *pprinter) fail(v any) {
 	fmt.Printf("%s%s[ FAIL ] %s\n", cleanReturn, colorError, p.lastMessage)
-	fmt.Printf("         error: %v%s\n", v, colorReset)
+	fmt.Printf("         %v%s\n", v, colorReset)
+}
+
+func (p *pprinter) warn(v any) {
+	fmt.Printf("%s%s[ WARN ] %s\n", cleanReturn, colorWarn, p.lastMessage)
+	fmt.Printf("         %v%s\n", v, colorReset)
 }
 
 func (p *pprinter) cover(fn func() error) (errcnt int) {
