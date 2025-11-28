@@ -52,6 +52,9 @@ func main() {
 		log.Println("fatal: only linux is supported outside of dev mode")
 		return
 	}
+	if !dev {
+		log.SetFlags(0)
+	}
 
 	/**/
 
