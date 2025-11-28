@@ -17,7 +17,6 @@ import (
 	"github.com/vapstack/mess/internal/proc"
 	"github.com/vapstack/mess/internal/proxy"
 	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 )
 
 func (n *node) localHandler(hw http.ResponseWriter, hr *http.Request) {
@@ -225,8 +224,10 @@ func (n *node) setupProxyClient() {
 		ExpectContinueTimeout: 2 * time.Second,
 
 		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify:    true,
-			GetCertificate:        n.getCert,
+			InsecureSkipVerify: true,
+			GetClientCertificate: func(_ *tls.CertificateRequestInfo) (*tls.Certificate, error) {
+				return n.cert.Load(), nil
+			},
 			VerifyPeerCertificate: n.verifyPeerCert,
 			RootCAs:               n.pool,
 			MinVersion:            tls.VersionTLS13,
@@ -365,15 +366,17 @@ func (n *node) setupPublicServer() (stopfn func(), errch chan error, err error) 
 
 	publicListener, lerr := net.Listen("tcp", addr)
 	if lerr != nil {
-		return nil, nil, fmt.Errorf("listen tcp %v: %w", addr, err)
+		return nil, nil, fmt.Errorf("listen tcp %v: %w", addr, lerr)
 	}
 
 	var tlsConfig *tls.Config
 
 	if !n.dev {
 		tlsConfig = &tls.Config{
-			ClientCAs:             n.pool,
-			GetCertificate:        n.getCert,
+			ClientCAs: n.pool,
+			GetCertificate: func(_ *tls.ClientHelloInfo) (*tls.Certificate, error) {
+				return n.cert.Load(), nil
+			},
 			VerifyPeerCertificate: n.verifyPeerCert,
 			ClientAuth:            tls.RequireAndVerifyClientCert,
 			MinVersion:            tls.VersionTLS13,
@@ -381,7 +384,7 @@ func (n *node) setupPublicServer() (stopfn func(), errch chan error, err error) 
 	}
 
 	publicServer := &http.Server{
-		Handler:           h2c.NewHandler(http.HandlerFunc(n.publicHandler), nil),
+		Handler:           http.HandlerFunc(n.publicHandler), // h2c.NewHandler(http.HandlerFunc(n.publicHandler), nil),
 		TLSConfig:         tlsConfig,
 		ErrorLog:          log.New(io.Discard, "", 0),
 		ReadHeaderTimeout: 4 * time.Second,
@@ -391,12 +394,9 @@ func (n *node) setupPublicServer() (stopfn func(), errch chan error, err error) 
 	}
 
 	stopfn = func() {
-		// ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		// defer cancel()
 		log.Println("stopping public server...")
 		if e := publicServer.Shutdown(context.Background()); e != nil {
 			n.logf("public server shutdown error: %v", e)
-			// log.Printf("public server shutdown error: %v\n", e)
 		}
 	}
 

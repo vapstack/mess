@@ -306,7 +306,7 @@ func cmdMap(cmd *command) (int, error) {
 	})
 
 	for _, rec := range recs {
-		fmt.Printf("%-5v - %-15v - %v - crt/%v\n", rec.ID, rec.Address(), rec.Location(), time.Unix(rec.CertExpires, 0).Format("2006-01-02"))
+		fmt.Printf(" %-5v - %-15v - %v - crt/%v\n", rec.ID, rec.Address(), rec.Location(), time.Unix(rec.CertExpires, 0).Format("2006-01-02"))
 		for _, svc := range rec.Services {
 			var (
 				status string

@@ -1,11 +1,9 @@
 package main
 
 import (
-	"fmt"
 	"log"
 
 	"github.com/cockroachdb/pebble/v2"
-	"github.com/vapstack/monotime"
 
 	"github.com/shirou/gopsutil/v4/mem"
 )

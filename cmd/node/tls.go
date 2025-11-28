@@ -75,10 +75,6 @@ func (n *node) loadCert() error {
 	return nil
 }
 
-func (n *node) getCert(_ *tls.ClientHelloInfo) (*tls.Certificate, error) {
-	return n.cert.Load(), nil
-}
-
 func (n *node) verifyPeerCert(raw [][]byte, _ [][]*x509.Certificate) error {
 	if len(raw) == 0 || len(raw[0]) == 0 {
 		return mess.ErrNoCertProvided

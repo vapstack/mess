@@ -66,7 +66,7 @@ func (n *node) pulse(rec *mess.Node, data []byte) {
 
 	res, err := n.client.Do(req)
 	if err != nil {
-		n.logf("pulse: request to %v: %v", dst, err)
+		n.logf("pulse: %v", err)
 		return
 	}
 	defer internal.DrainAndCloseBody(res)
