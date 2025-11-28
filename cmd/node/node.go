@@ -15,23 +15,24 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/cockroachdb/pebble/v2"
 	"github.com/vapstack/mess"
 	"github.com/vapstack/mess/internal"
 	"github.com/vapstack/mess/internal/proc"
 
-	"github.com/rosedblabs/rosedb/v2"
 	"github.com/vapstack/monotime"
 	bolterrors "go.etcd.io/bbolt/errors"
 )
 
 func main() {
+
+	defer pebbleCache.Unref()
 
 	binName, err := os.Executable()
 	if err != nil {
@@ -71,9 +72,6 @@ func main() {
 		tmpdir: filepath.Join(binPath, "tmp"),
 		busdir: filepath.Join(binPath, "bus"),
 		dev:    dev,
-
-		// busdb: make(map[dkey]*dbi),
-		// logdb: make(map[dkey]*dbi),
 	}
 
 	if err = os.MkdirAll(n.tmpdir, 0700); err != nil {
@@ -209,7 +207,7 @@ type node struct {
 
 	busmu  sync.Mutex
 	busdb  sync.Map
-	busids *monobolt
+	busids *monoBolt
 
 	busTopics *topicTracker
 
@@ -595,8 +593,8 @@ func (n *node) close() error {
 	n.wg.Wait()
 
 	n.busdb.Range(func(key, db any) bool {
-		k := key.(dkey)
-		if err := db.(*dbval).Close(); err != nil {
+		k := key.(dbKey)
+		if err := db.(*dbInstance).Close(); err != nil {
 			n.logf("error closing bus db for topic %v: %v", internal.ServiceName(k.name, k.realm), err)
 			// log.Printf("error closing bus db for topic %v@%v: %v", k.name, k.realm, e)
 		}
@@ -608,8 +606,8 @@ func (n *node) close() error {
 
 	if !n.dev {
 		n.logdb.Range(func(key, db any) bool {
-			k := key.(dkey)
-			if e := db.(*dbval).Close(); e != nil {
+			k := key.(dbKey)
+			if e := db.(*dbInstance).Close(); e != nil {
 				log.Printf("error closing log db for %v: %v", internal.ServiceName(k.name, k.realm), e)
 			}
 			return true
@@ -774,42 +772,27 @@ func isDev() bool {
 	return dev
 }
 
-func toCronMinute(s string) string {
-	var h int
-	for i := 0; i < len(s); i++ {
-		h += int(s[i])
-	}
-	return strconv.Itoa(h % 60)
-}
-
 type (
-	dkey struct {
+	dbKey struct {
 		realm string
 		name  string
 	}
-	dbval struct {
-		*rosedb.DB
-		seq *monotime.Gen
+	dbInstance struct {
+		*pebble.DB
+		seq  *monotime.Gen
+		wcnt atomic.Uint64
 	}
 )
 
-func loggedClose(f *os.File) {
+func closeFile(f *os.File) {
 	n := f.Name()
 	if err := f.Close(); err != nil {
 		log.Printf("error closing %v: %v\n", n, err)
 	}
 }
 
-func silentClose(f *os.File) {
-	_ = f.Close()
-}
-
-func loggedRemove(name string) {
+func removeFile(name string) {
 	if err := os.Remove(name); err != nil {
 		log.Printf("error removing %v: %v\n", name, err)
 	}
-}
-
-func silentRemove(name string) {
-	_ = os.Remove(name)
 }

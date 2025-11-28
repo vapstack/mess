@@ -79,7 +79,7 @@ type (
 
 type EventCursor []monotime.UUID
 
-const MaxEventSize = 1 << 24 // 16 Mb
+const MaxEventSize = 16 << 20
 
 func (ec EventCursor) Update(uuid monotime.UUID) EventCursor {
 	nodeID := uuid.NodeID()

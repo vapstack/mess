@@ -16,33 +16,31 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cockroachdb/pebble/v2"
+	"go.etcd.io/bbolt"
+
 	"github.com/vapstack/mess"
 	"github.com/vapstack/mess/internal"
 	"github.com/vapstack/monotime"
-	"go.etcd.io/bbolt"
-
-	"github.com/rosedblabs/rosedb/v2"
 )
 
 const eventTTL = 7 * 24 * time.Hour
 
-const readEventsMax = 10_000
+func (n *node) getBusDB(realm, topic string, autoCreate bool) (*dbInstance, error) {
 
-func (n *node) openBus(realm, topic string, autoCreate bool) (*dbval, error) {
-
-	key := dkey{
+	key := dbKey{
 		realm: realm,
 		name:  topic,
 	}
 	if v, ok := n.busdb.Load(key); ok {
-		return v.(*dbval), nil
+		return v.(*dbInstance), nil
 	}
 
 	n.busmu.Lock()
 	defer n.busmu.Unlock()
 
 	if v, ok := n.busdb.Load(key); ok {
-		return v.(*dbval), nil
+		return v.(*dbInstance), nil
 	}
 
 	if realm == "" {
@@ -57,18 +55,16 @@ func (n *node) openBus(realm, topic string, autoCreate bool) (*dbval, error) {
 		}
 	}
 
-	options := rosedb.DefaultOptions
-	options.Sync = true
-	options.SegmentSize = 512 * 1024 * 1024
-	options.DirPath = path
-	options.AutoMergeCronExpr = toCronMinute(realm+topic) + " 4 * * *"
-
-	rose, err := rosedb.Open(options)
+	pdb, err := pebble.Open(path, pebbleBusOptions())
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("db open: %w", err)
 	}
 
-	db := &dbval{DB: rose}
+	db := &dbInstance{
+		DB: pdb,
+	}
+
+	n.cleanupEvents(db)
 
 	n.busdb.Store(key, db)
 
@@ -77,7 +73,7 @@ func (n *node) openBus(realm, topic string, autoCreate bool) (*dbval, error) {
 
 /*
 func (n *node) deleteBus(realm, topic string) error {
-	key := dkey{
+	key := dbKey{
 		realm: realm,
 		name:  topic,
 	}
@@ -90,7 +86,7 @@ func (n *node) deleteBus(realm, topic string) error {
 		realm = "default"
 	}
 	dbpath := filepath.Join(n.logdir, realm, topic)
-	if err := v.(*dbval).Close(); err != nil {
+	if err := v.(*pebble.DB).Close(); err != nil {
 		return fmt.Errorf("close: %w", err)
 	}
 	if err := os.RemoveAll(dbpath); err != nil {
@@ -122,18 +118,18 @@ func (n *node) publish(realm string, req *mess.PublishRequest) error {
 		}
 	}
 
-	db, err := n.openBus(realm, req.Topic, true)
+	db, err := n.getBusDB(realm, req.Topic, true)
 	if err != nil {
 		return err
 	}
 
-	metabuf := getBusBuf()
-	defer putBusBuf(metabuf)
+	metaBuf := getBusBuf()
+	defer putBusBuf(metaBuf)
 
-	if err = gob.NewEncoder(metabuf).Encode(req.Meta); err != nil {
+	if err = gob.NewEncoder(metaBuf).Encode(req.Meta); err != nil {
 		return fmt.Errorf("error encoding field data: %w", err)
 	}
-	metadata := metabuf.Bytes()
+	metadata := metaBuf.Bytes()
 
 	bufs := make([]*bytes.Buffer, 0, len(req.Events))
 	defer func() {
@@ -142,8 +138,8 @@ func (n *node) publish(realm string, req *mess.PublishRequest) error {
 		}
 	}()
 
-	batch := db.NewBatch(rosedb.DefaultBatchOptions)
-	defer func(b *rosedb.Batch) { _ = b.Rollback() }(batch)
+	batch := db.NewBatch()
+	defer closeBatch(batch)
 
 	var id monotime.UUID
 
@@ -159,25 +155,37 @@ func (n *node) publish(realm string, req *mess.PublishRequest) error {
 		buf.Write(metadata)
 		buf.Write(data)
 
-		if err = batch.PutWithTTL(id[:], buf.Bytes(), eventTTL); err != nil {
+		if err = batch.Set(id[:], buf.Bytes(), nil); err != nil {
 			return fmt.Errorf("write error: %w", err)
 		}
 	}
 
 	// todo: notify or somehow increase counters/metrics
 
-	if err = batch.Commit(); err != nil {
+	if err = batch.Commit(pebble.Sync); err != nil {
 		return fmt.Errorf("db commit error: %w", err)
 	}
 
-	n.busTopics.reg(realm, req.Topic, id) // ids[len(ids)-1])
+	n.busTopics.reg(realm, req.Topic, id)
+
+	if db.wcnt.Add(1)%5000 == 0 {
+		n.cleanupEvents(db)
+	}
 
 	return nil
 }
 
+func (n *node) cleanupEvents(db *dbInstance) {
+	start := monotime.MinUUID(int(n.id), time.Now().Add(-eventTTL*10))
+	end := monotime.MinUUID(int(n.id), time.Now().Add(-eventTTL))
+	if err := db.DeleteRange(start[:], end[:], pebble.NoSync); err != nil {
+		n.logf("error removing expired events: %v", err)
+	}
+}
+
 func (n *node) eventsRequest(req *mess.EventsRequest) ([]mess.Event, error) {
 
-	db, err := n.openBus(req.Realm, req.Topic, false)
+	db, err := n.getBusDB(req.Realm, req.Topic, false)
 	if err != nil {
 		return nil, fmt.Errorf("db open: %w", err)
 	}
@@ -185,93 +193,34 @@ func (n *node) eventsRequest(req *mess.EventsRequest) ([]mess.Event, error) {
 		return nil, nil
 	}
 
-	if req.Limit == 0 {
-		req.Limit = 100
-	} else if req.Limit > 1000 {
-		req.Limit = 1000
-	}
-
 	if req.Offset == monotime.ZeroUUID {
-		// DescendKeys returns only pattern-related errors
-		_ = db.DescendKeys(nil, false, func(k []byte) (bool, error) {
-			if len(k) != 16 {
-				err = errors.New("invalid key len")
-				return false, err
-			}
-			req.Offset = monotime.UUID(k)
-			return false, nil
-		})
+		req.Offset, err = getLastBusID(db)
 		if err != nil {
-			return nil, fmt.Errorf("error getting last offset: %w", err)
+			return nil, err
 		}
 	}
-
-	var meta []mess.MetaField
 
 	events := make([]mess.Event, 0, req.Limit)
 
-	firstHandled := false
-	db.AscendGreaterOrEqual(req.Offset[:], func(k []byte, v []byte) (bool, error) {
-		if len(k) != 16 {
-			err = errors.New("invalid key len")
-			return false, err
-		}
-		if !firstHandled {
-			firstHandled = true
-			if bytes.Equal(req.Offset[:], k) {
-				return true, nil
-			}
-		}
-
-		r := bytes.NewReader(v)
-
-		meta = meta[:0]
-
-		if err = gob.NewDecoder(r).Decode(&meta); err != nil {
-			err = fmt.Errorf("error decoding meta: %w", err)
-			return false, err
-		}
-
-		if !metaMatch(meta, req.Filter) {
-			return true, nil
-		}
-
-		events = append(events, mess.Event{
-			ID:    monotime.UUID(k),
-			Topic: req.Topic,
-			Meta:  slices.Clone(meta),
-			Data:  v[len(v)-r.Len():],
-		})
-
-		return uint64(len(events)) < req.Limit, nil
-	})
+	_, events, err = readEvents(db, req.Offset, events, req, 0)
 
 	return events, err
 }
 
 func (n *node) eventsStream(req *mess.EventsRequest) (Producer[mess.Event], error) {
 
-	db, dberr := n.openBus(req.Realm, req.Topic, false)
-	if dberr != nil {
-		return nil, fmt.Errorf("db open: %w", dberr)
+	db, err := n.getBusDB(req.Realm, req.Topic, false)
+	if err != nil {
+		return nil, fmt.Errorf("db open: %w", err)
 	}
 	if db == nil {
 		return nil, errors.New("topic not found")
 	}
 
 	if req.Offset == monotime.ZeroUUID {
-		var err error
-		// DescendKeys returns only pattern-related errors
-		_ = db.DescendKeys(nil, false, func(k []byte) (bool, error) {
-			if len(k) != 16 {
-				err = errors.New("invalid key len")
-				return false, err
-			}
-			req.Offset = monotime.UUID(k)
-			return false, nil
-		})
+		req.Offset, err = getLastBusID(db)
 		if err != nil {
-			return nil, fmt.Errorf("error getting last offset: %w", err)
+			return nil, err
 		}
 	}
 
@@ -279,7 +228,7 @@ func (n *node) eventsStream(req *mess.EventsRequest) (Producer[mess.Event], erro
 
 		defer close(stream)
 
-		read := uint64(0)
+		sent := uint64(0)
 		done := ctx.Done()
 
 		key := req.Offset
@@ -288,59 +237,23 @@ func (n *node) eventsStream(req *mess.EventsRequest) (Producer[mess.Event], erro
 
 		events := make([]mess.Event, 0, 64)
 
-		var meta []mess.MetaField
-
 		for {
-			firstHandled := false
-			db.AscendGreaterOrEqual(key[:], func(k []byte, v []byte) (bool, error) {
-				if len(k) != 16 {
-					err = errors.New("invalid key len")
-					return false, err
-				}
-				if !firstHandled {
-					firstHandled = true
-					if bytes.Equal(key[:], k) {
-						return true, nil
-					}
-				}
-
-				r := bytes.NewReader(v)
-
-				meta = meta[:0]
-
-				if err = gob.NewDecoder(r).Decode(&meta); err != nil {
-					err = fmt.Errorf("error decoding meta: %w", err)
-					return false, err
-				}
-
-				key = monotime.UUID(k)
-
-				if !metaMatch(meta, req.Filter) {
-					return true, nil
-				}
-
-				events = append(events, mess.Event{
-					ID:    key,
-					Topic: req.Topic,
-					Meta:  slices.Clone(meta),
-					Data:  v[len(v)-r.Len():], // rosedb returns a copy
-				})
-
-				read++
-
-				return len(events) < cap(events) && (req.Limit == 0 || read < req.Limit), nil
-			})
+			key, events, err = readEvents(db, key, events, req, req.Limit-sent)
 
 			for _, event := range events {
 				select {
 				case stream <- event:
+					sent++
+					if req.Limit > 0 && sent >= req.Limit {
+						return
+					}
 				case <-done:
 					return
 				}
 			}
 
 			if err != nil {
-				n.logf("log stream error: %v", err)
+				n.logf("event stream error: %v", err)
 				return
 			}
 
@@ -359,6 +272,109 @@ func (n *node) eventsStream(req *mess.EventsRequest) (Producer[mess.Event], erro
 	return producer, nil
 }
 
+func getLastBusID(db *dbInstance) (monotime.UUID, error) {
+	zero := monotime.ZeroUUID
+
+	iter, err := db.NewIter(nil)
+	if err != nil {
+		return zero, fmt.Errorf("iterator: %w", err)
+	}
+	defer closeIter(iter)
+
+	if iter.Last() {
+		if k := iter.Key(); len(k) != 16 {
+			return zero, fmt.Errorf("invalid key len: %v", len(k))
+		} else {
+			return monotime.UUID(k), nil
+		}
+	}
+	return zero, nil
+}
+
+var metaPool = sync.Pool{
+	New: func() any {
+		s := make([]mess.MetaField, 0, 8)
+		return &s
+	},
+}
+
+func readEvents(db *dbInstance, lastKnown monotime.UUID, destSlice []mess.Event, req *mess.EventsRequest, atMost uint64) (monotime.UUID, []mess.Event, error) {
+
+	firstHandled := false
+
+	iter, err := db.NewIter(&pebble.IterOptions{
+		LowerBound: lastKnown[:],
+	})
+	if err != nil {
+		return lastKnown, destSlice, fmt.Errorf("iterator: %w", err)
+	}
+	defer closeIter(iter)
+
+	meta := metaPool.Get().(*[]mess.MetaField)
+	defer metaPool.Put(meta)
+
+	added := uint64(0)
+	mem := 0
+
+	for ok := iter.First(); ok; ok = iter.Next() {
+
+		k := iter.Key()
+
+		if len(k) != 16 {
+			return lastKnown, destSlice, fmt.Errorf("invalid key len: %v", len(k))
+		}
+
+		if !firstHandled {
+			firstHandled = true
+			if bytes.Equal(lastKnown[:], k) {
+				continue
+			}
+		}
+
+		var v []byte
+		v, err = iter.ValueAndErr()
+		if err != nil {
+			return lastKnown, destSlice, fmt.Errorf("value error: %w", err)
+		}
+
+		r := bytes.NewReader(v)
+		*meta = (*meta)[:0]
+
+		if err = gob.NewDecoder(r).Decode(meta); err != nil {
+			return lastKnown, destSlice, fmt.Errorf("error decoding meta: %w", err)
+		}
+
+		lastKnown = monotime.UUID(k)
+
+		if !metaMatch(*meta, req.Filter) {
+			continue
+		}
+
+		destSlice = append(destSlice, mess.Event{
+			ID:    lastKnown,
+			Topic: req.Topic,
+			Meta:  slices.Clone(*meta),
+			Data:  bytes.Clone(v[len(v)-r.Len():]),
+		})
+
+		added++
+		mem += len(v) // rough approx.
+
+		if atMost > 0 && added >= atMost {
+			break
+		}
+		if mem >= 32<<20 {
+			break
+		}
+
+		if len(destSlice) == cap(destSlice) {
+			break
+		}
+	}
+
+	return lastKnown, destSlice, nil
+}
+
 // func (n *node) emit(realm, sender string, topic string, payload []byte) error {
 //
 // }
@@ -368,13 +384,13 @@ func (n *node) eventsStream(req *mess.EventsRequest) (Producer[mess.Event], erro
 // }
 //
 // func (n *node) receiveRequest(realm string, req *mess.SubscribeRequest) ([]mess.Event, error) {
-// 	return nil, fmt.Errorf("not implemented")
+//
 // }
 
 func (n *node) eventProducerList(realm, topic string) []uint64 {
 	list := make([]uint64, 0)
 
-	if db, _ := n.openBus(realm, topic, false); db != nil {
+	if db, _ := n.getBusDB(realm, topic, false); db != nil {
 		list = append(list, n.id)
 	}
 
@@ -433,10 +449,10 @@ func (n *node) hasNewProducers(realm, topic string, active []uint64) bool {
 	return hasNewIDs(active, collected)
 }
 
-func hasNewIDs(oldids, newids []uint64) bool {
+func hasNewIDs(oldIDs, newIDs []uint64) bool {
 	i, j := 0, 0
-	for i < len(oldids) && j < len(newids) {
-		av, bv := oldids[i], newids[j]
+	for i < len(oldIDs) && j < len(newIDs) {
+		av, bv := oldIDs[i], newIDs[j]
 		switch {
 		case bv == av:
 			i++
@@ -447,7 +463,7 @@ func hasNewIDs(oldids, newids []uint64) bool {
 			return true
 		}
 	}
-	return j < len(newids)
+	return j < len(newIDs)
 }
 
 func (n *node) collectEventProducers(realm string, req *mess.SubscribeRequest) ([]uint64, []Producer[mess.Event], error) {
@@ -455,9 +471,9 @@ func (n *node) collectEventProducers(realm string, req *mess.SubscribeRequest) (
 	producers := make([]Producer[mess.Event], 0)
 	list := make([]uint64, 0)
 
-	var errlist []error
+	var errs []error
 
-	if db, _ := n.openBus(realm, req.Topic, false); db != nil {
+	if db, _ := n.getBusDB(realm, req.Topic, false); db != nil {
 		p, err := n.eventsStream(&mess.EventsRequest{
 			Realm:  realm,
 			Topic:  req.Topic,
@@ -467,7 +483,7 @@ func (n *node) collectEventProducers(realm string, req *mess.SubscribeRequest) (
 			Filter: req.Filter,
 		})
 		if err != nil {
-			errlist = append(errlist, fmt.Errorf("error creating event stream from local bus: %w", err))
+			errs = append(errs, fmt.Errorf("error creating event stream from local bus: %w", err))
 		} else {
 			producers = append(producers, p)
 			list = append(list, n.id)
@@ -485,7 +501,7 @@ func (n *node) collectEventProducers(realm string, req *mess.SubscribeRequest) (
 				Filter: req.Filter,
 			})
 			if err != nil {
-				errlist = append(errlist, fmt.Errorf("error creating event stream from node %v: %w", remote.ID, err))
+				errs = append(errs, fmt.Errorf("error creating event stream from node %v: %w", remote.ID, err))
 			} else {
 				producers = append(producers, p)
 				list = append(list, remote.ID)
@@ -494,8 +510,8 @@ func (n *node) collectEventProducers(realm string, req *mess.SubscribeRequest) (
 	}
 
 	if len(producers) == 0 {
-		if len(errlist) > 0 {
-			return nil, nil, errlist[0]
+		if len(errs) > 0 {
+			return nil, nil, errs[0]
 		}
 		return nil, nil, nil
 	}
@@ -683,17 +699,17 @@ func mergeChans[T any](chans ...<-chan T) <-chan T {
 
 /**/
 
-type monobolt struct {
+type monoBolt struct {
 	mono *monotime.GenUUID
 	bolt *bbolt.DB
 	buck []byte
 	key  []byte
 }
 
-func newMonoBolt(nodeID int, filename string) (*monobolt, error) {
+func newMonoBolt(nodeID int, filename string) (*monoBolt, error) {
 	opts := *bbolt.DefaultOptions
 	opts.Timeout = time.Second
-	bolt, err := bbolt.Open(filename, 0600, nil)
+	bolt, err := bbolt.Open(filename, 0600, &opts)
 	if err != nil {
 		return nil, fmt.Errorf("initialization error: %w", err)
 	}
@@ -729,7 +745,7 @@ func newMonoBolt(nodeID int, filename string) (*monobolt, error) {
 	if err != nil {
 		return nil, fmt.Errorf("monotime error: %w", err)
 	}
-	m := &monobolt{
+	m := &monoBolt{
 		mono: g,
 		bolt: bolt,
 		buck: buck,
@@ -738,7 +754,7 @@ func newMonoBolt(nodeID int, filename string) (*monobolt, error) {
 	return m, nil
 }
 
-func (m *monobolt) Next() (monotime.UUID, error) {
+func (m *monoBolt) Next() (monotime.UUID, error) {
 	var uuid monotime.UUID
 	tx, err := m.bolt.Begin(true)
 	if err != nil {
@@ -753,7 +769,7 @@ func (m *monobolt) Next() (monotime.UUID, error) {
 	return uuid, tx.Commit()
 }
 
-func (m *monobolt) close() error {
+func (m *monoBolt) close() error {
 	return m.bolt.Close()
 }
 
@@ -767,7 +783,7 @@ type topicTracker struct {
 
 func (tt *topicTracker) each(fn func(realm, topic string, uuid monotime.UUID)) {
 	tt.topics.Range(func(key, value any) bool {
-		k := key.(dkey)
+		k := key.(dbKey)
 		t := value.(*atomic.Value).Load().(monotime.UUID)
 		fn(k.realm, k.name, t)
 		return true
@@ -775,11 +791,11 @@ func (tt *topicTracker) each(fn func(realm, topic string, uuid monotime.UUID)) {
 }
 
 func (tt *topicTracker) reg(realm, topic string, uuid monotime.UUID) {
-	key := dkey{
+	key := dbKey{
 		realm: realm,
 		name:  topic,
 	}
-	// the most recent uuid is not required, so last write wins
+	// the most recent uuid is not required, so the last write wins
 	v, ok := tt.topics.Load(key)
 	if ok {
 		v.(*atomic.Value).Store(uuid)

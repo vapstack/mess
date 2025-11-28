@@ -15,6 +15,7 @@ Those basics are currently:
 > None of the above is production ready
 
 Planned:
+- Optional health checks
 - Metrics collection
 - Security audit
 - Distributed config

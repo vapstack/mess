@@ -375,7 +375,7 @@ func cmdUpgrade(cmd *command) (int, error) {
 	if err != nil {
 		return 1, err
 	}
-	if s.Size() < 1<<20 || s.Size() > 1<<26 {
+	if s.Size() < 1<<20 || s.Size() > 64<<20 {
 		return 1, fmt.Errorf("suspicious file size: %v", s.Size())
 	}
 

@@ -98,7 +98,7 @@ func init() {
 			public: true,
 			verify: true,
 			fn: func(n *node, w *proxy.Wrapper, r *http.Request) {
-				b := sMust(io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<26)))
+				b := sMust(io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<20)))
 				rsCheck(n.upgradeNode(b))
 			},
 		},
@@ -206,7 +206,7 @@ func init() {
 		"publish": {
 			local: true,
 			fn: func(n *node, w *proxy.Wrapper, r *http.Request) {
-				req := rMust(BodyTo[mess.PublishRequest](w, r, 1<<26)) // max 64 Mb in total
+				req := rMust(BodyTo[mess.PublishRequest](w, r, 64<<20))
 				rFail(req.Topic == "", "topic is empty")
 				sCheck(n.publish(w.Caller.Realm, req))
 			},
@@ -244,7 +244,7 @@ func init() {
 		"emit": {
 			local: true,
 			fn: func(n *node, w *proxy.Wrapper, r *http.Request) {
-				// req := rMust(BodyTo[mess.EmitRequest](w, r, 1<<24))
+				// req := rMust(BodyTo[mess.EmitRequest](w, r, 16<<20))
 				sCheck(errors.New("not implemented"))
 			},
 		},
@@ -477,8 +477,8 @@ func (n *node) storeServicePackage(realm, service string, r io.Reader) (error, e
 	if err != nil {
 		return nil, fmt.Errorf("error creating temp file: %w", err)
 	}
-	defer loggedRemove(t)
-	defer silentClose(f)
+	defer removeFile(t)
+	defer closeFile(f)
 
 	_, err = io.Copy(f, r)
 	if err = f.Close(); err != nil {
@@ -508,7 +508,7 @@ func (n *node) upgradeNode(bindata []byte) (error, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer silentClose(f)
+	defer closeFile(f)
 
 	l, err := f.Write(bindata)
 	if err != nil {
