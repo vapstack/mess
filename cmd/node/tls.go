@@ -165,7 +165,7 @@ func verifySignatureHeader(publicKey ed25519.PublicKey, value string) error {
 
 	ts := int64(binary.BigEndian.Uint64(data[:8]))
 
-	if time.Since(time.Unix(ts, 0)) > 10*time.Second {
+	if time.Since(time.Unix(ts, 0)) > 30*time.Second {
 		return errors.New("signature verification failed")
 	}
 
