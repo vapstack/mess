@@ -166,15 +166,15 @@ func cmdRotate(cmd *command) (int, error) {
 
 	days := 365
 
-	if len(cmd.args) > 1 {
-		d, err := strconv.Atoi(cmd.args[1])
+	if len(cmd.args) > 0 {
+		d, err := strconv.ParseUint(cmd.args[0], 10, 32)
 		if err != nil {
 			return 1, fmt.Errorf("invalid cert lifetime: %w", err)
 		}
 		if d < 1 {
 			return 1, fmt.Errorf("invalid cert lifetime: %v", d)
 		}
-		days = d
+		days = int(d)
 	}
 
 	var force bool
@@ -190,8 +190,11 @@ func cmdRotate(cmd *command) (int, error) {
 
 	ec := cmd.eachNodeProgress(func(rec *mess.Node) error {
 
-		if !force && time.Unix(rec.CertExpires, 0).AddDate(0, 0, -days).After(time.Now()) {
-			return errSkip
+		if !force {
+			remainDays := float64(time.Unix(rec.CertExpires, 0).Sub(time.Now()) / (24 * time.Hour))
+			if remainDays > float64(days)*0.8 {
+				return errSkip
+			}
 		}
 
 		keyPEM, crtPEM, e := cmd.mess.createNodeCert(rec.ID, days)
@@ -207,7 +210,7 @@ func cmdRotate(cmd *command) (int, error) {
 			return e
 		}
 
-		rec.CertExpires = time.Now().AddDate(1, 0, 0).Unix()
+		rec.CertExpires = time.Now().AddDate(0, 0, days).Unix()
 		updated++
 
 		return nil
@@ -300,21 +303,27 @@ func lazySync(cmd *command) {
 	slices.Sort(ids)
 
 	var failed []string
+
 	total := len(ids)
 	padding := len(strconv.Itoa(total))
+
 	for i, id := range ids {
 		if err := cmd.ctx.Err(); err != nil {
 			pp.fail(err)
 			return
 		}
+
 		rec := cmd.mess.state.Map[id]
+
 		pp.printf("Sync: %*v/%v - %v - %v", padding, i, total, rec.ID, rec.Address())
+
 		if err := cmd.fetchState(rec.Address()); err != nil {
 			failed = append(failed, strconv.FormatUint(rec.ID, 10))
 		}
 	}
 
 	pp.printf(fmt.Sprintf("Sync: %*v/%v", padding, total-len(failed), total))
+
 	if len(failed) > 0 {
 		pp.warn(fmt.Sprintf("unreachable: %v", strings.Join(failed, ", ")))
 	} else {
