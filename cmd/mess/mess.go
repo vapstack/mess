@@ -350,15 +350,15 @@ func (cmd *command) post(host, endpoint, query string, filename string) error {
 	if err != nil {
 		return err
 	}
+	req.Header.Set(mess.CallerHeader, internal.ConstructCaller(0, "", mess.ServiceName))
 	req.Header.Set(mess.TargetServiceHeader, mess.ServiceName)
+	req.Header.Set(internal.SigHeader, signatureHeader(cmd.mess.key.(ed25519.PrivateKey)))
 
 	res, err := cmd.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("request: %w", err)
 	}
 	defer internal.DrainAndCloseBody(res)
-	// defer func() { _ = res.Body.Close() }()
-	// defer func() { _, _ = io.Copy(io.Discard, res.Body) }()
 
 	if res.StatusCode >= 300 {
 		b, e := io.ReadAll(res.Body)
@@ -407,10 +407,6 @@ func (cmd *command) calltype(ctype, host, endpoint string, data any, result any)
 		return fmt.Errorf("request: %w", err)
 	}
 	defer internal.DrainAndCloseBody(res)
-	// defer func() { _ = res.Body.Close() }()
-	// defer func() { _, _ = io.Copy(io.Discard, res.Body) }()
-	// defer func(rsp *http.Response) { _ = rsp.Body.Close() }(res)
-	// defer func(rsp *http.Response) { _, _ = io.Copy(io.Discard, rsp.Body) }(res)
 
 	if res.StatusCode >= 300 {
 		b, e := io.ReadAll(res.Body)

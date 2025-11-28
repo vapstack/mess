@@ -389,7 +389,7 @@ func cmdUpgrade(cmd *command) (int, error) {
 		})
 	} else {
 		ec = cmd.eachNodeProgress(func(rec *mess.Node) error {
-			return cmd.call(rec.Address(), "upgrade", "", nil)
+			return cmd.post(rec.Address(), "upgrade", "", file)
 		})
 	}
 	return ec, nil
