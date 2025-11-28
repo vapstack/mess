@@ -8,6 +8,7 @@ Wants=network-online.target
 [Service]
 
 ExecStart=/opt/mess/node
+WorkingDirectory=/opt/mess
 Restart=always
 RestartSec=5s
 
