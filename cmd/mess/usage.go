@@ -38,11 +38,11 @@ var commandUsage = map[string][]string{
 	},
 	"upgrade": {
 		"Upgrade a node binary using the provided file",
-		"$ mess node-upgrade <ip_addr|node_id> <filename>",
+		"$ mess upgrade <ip_addr|node_id|all> <filename> [now]",
 	},
 	"shutdown": {
 		"Gracefully shut down a node (requires systemd unit to start again)",
-		"$ mess shutdown <ip_addr|node_id>",
+		"$ mess shutdown <ip_addr|node_id|all>",
 	},
 
 	"put": {

@@ -196,7 +196,7 @@ func cmdRotate(cmd *command) (int, error) {
 			return e
 		}
 
-		e = cmd.call(rec.Address(), "cert", internal.RotateRequest{
+		e = cmd.call(rec.Address(), "rotate", internal.RotateRequest{
 			Key: string(keyPEM),
 			Crt: string(crtPEM),
 		}, nil)
@@ -367,12 +367,14 @@ func cmdShowRec(cmd *command) (int, error) {
 }
 
 func cmdUpgrade(cmd *command) (int, error) {
-	if len(cmd.args) != 2 {
+	if len(cmd.args) < 2 || len(cmd.args) > 3 {
 		printCommandUsage(cmd.name, 0)
 		return 1, nil
 	}
 	node := cmd.args[0]
 	file := cmd.args[1]
+
+	now := len(cmd.args) == 3 && cmd.args[2] == "now"
 
 	s, err := os.Stat(file)
 	if err != nil {
@@ -383,13 +385,25 @@ func cmdUpgrade(cmd *command) (int, error) {
 	}
 
 	ec := 0
-	if node != "all" {
-		ec = cmd.nodeProgress(node).cover(func() error {
-			return cmd.post(cmd.addr(node), "upgrade", "", file)
+	if node == "all" {
+		ec = cmd.eachNodeProgress(func(rec *mess.Node) error {
+			if e := cmd.post(rec.Address(), "upgrade", "", file); e != nil {
+				return e
+			}
+			if now {
+				return cmd.call(rec.Address(), "shutdown", nil, nil)
+			}
+			return nil
 		})
 	} else {
-		ec = cmd.eachNodeProgress(func(rec *mess.Node) error {
-			return cmd.post(rec.Address(), "upgrade", "", file)
+		ec = cmd.nodeProgress(node).cover(func() error {
+			if e := cmd.post(cmd.addr(node), "upgrade", "", file); e != nil {
+				return e
+			}
+			if now {
+				return cmd.call(cmd.addr(node), "shutdown", nil, nil)
+			}
+			return nil
 		})
 	}
 	return ec, nil
@@ -401,10 +415,15 @@ func cmdShutdown(cmd *command) (int, error) {
 		return 1, nil
 	}
 	node := cmd.args[0]
-	ec := cmd.nodeProgress(node).cover(func() error {
+
+	if node == "all" {
+		return cmd.eachNodeProgress(func(rec *mess.Node) error {
+			return cmd.call(rec.Address(), "shutdown", nil, nil)
+		}), nil
+	}
+	return cmd.nodeProgress(node).cover(func() error {
 		return cmd.call(cmd.addr(node), "shutdown", nil, nil)
-	})
-	return ec, nil
+	}), nil
 }
 
 func cmdPut(cmd *command) (int, error) {
