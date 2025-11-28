@@ -233,7 +233,7 @@ func cmdAdd(cmd *command) (int, error) {
 
 	ec := pstartf(addr).cover(func() error {
 		state := new(mess.NodeState)
-		if err := cmd.call(addr, "pulse", cmd.mess.state, state); err != nil {
+		if err := cmd.call(addr, "state", nil, state); err != nil {
 			return err
 		}
 		if state.Node == nil {
@@ -241,8 +241,11 @@ func cmdAdd(cmd *command) (int, error) {
 		}
 		for id := range cmd.mess.state.Map {
 			if id == state.Node.ID {
-				return fmt.Errorf("the node is either already added or running with a node id already taken")
+				return fmt.Errorf("the node is either already added or running with a node id already taken (duplicate node id)")
 			}
+		}
+		if err := cmd.call(addr, "pulse", cmd.mess.state, state); err != nil {
+			return err
 		}
 		return cmd.applyState(state, addr)
 	})
