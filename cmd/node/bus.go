@@ -478,7 +478,7 @@ func (n *node) collectEventProducers(realm string, req *mess.SubscribeRequest) (
 			Realm:  realm,
 			Topic:  req.Topic,
 			Offset: req.Cursor.ExtractNode(n.id),
-			Limit:  0, // req.Limit,
+			Limit:  0,
 			Stream: true,
 			Filter: req.Filter,
 		})
@@ -496,7 +496,7 @@ func (n *node) collectEventProducers(realm string, req *mess.SubscribeRequest) (
 				Realm:  realm,
 				Topic:  req.Topic,
 				Offset: req.Cursor.ExtractNode(remote.ID),
-				Limit:  0, // req.Limit,
+				Limit:  0,
 				Stream: true,
 				Filter: req.Filter,
 			})
@@ -645,7 +645,6 @@ func (n *node) subscriptionStream(realm string, req *mess.SubscribeRequest) (Pro
 		// producers receive the same context and should cancel themselves
 
 		tick := time.NewTicker(time.Minute)
-		// sent := uint64(0)
 		for {
 			select {
 			case v, ok := <-stream:
@@ -654,13 +653,9 @@ func (n *node) subscriptionStream(realm string, req *mess.SubscribeRequest) (Pro
 				}
 				select {
 				case out <- v:
-					// sent++
 				case <-done:
 					return
 				}
-				// if req.Limit > 0 && sent >= req.Limit {
-				// 	return
-				// }
 			case <-tick.C:
 				if n.hasNewProducers(realm, req.Topic, list) {
 					return
@@ -709,7 +704,7 @@ type monoBolt struct {
 func newMonoBolt(nodeID int, filename string) (*monoBolt, error) {
 	opts := *bbolt.DefaultOptions
 	opts.Timeout = time.Second
-	bolt, err := bbolt.Open(filename, 0600, &opts)
+	bolt, err := bbolt.Open(filename, 0o600, &opts)
 	if err != nil {
 		return nil, fmt.Errorf("initialization error: %w", err)
 	}

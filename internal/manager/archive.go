@@ -1,4 +1,4 @@
-package proc
+package manager
 
 import (
 	"archive/tar"
@@ -30,7 +30,7 @@ func writeTarGzInto(r io.Reader, dest string) error {
 		err := func() error {
 			h, err := tr.Next()
 			if err == io.EOF {
-				return nil
+				return err
 			}
 			if err != nil {
 				return err
@@ -47,7 +47,7 @@ func writeTarGzInto(r io.Reader, dest string) error {
 					return err
 				}
 			case tar.TypeReg:
-				if err = os.MkdirAll(filepath.Dir(target), 0700); err != nil {
+				if err = os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 					return err
 				}
 				f, e := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(h.Mode))
@@ -64,6 +64,9 @@ func writeTarGzInto(r io.Reader, dest string) error {
 			}
 			return nil
 		}()
+		if err == io.EOF {
+			return nil
+		}
 		if err != nil {
 			return err
 		}
@@ -87,7 +90,7 @@ func writeZipInto(ra io.ReaderAt, size int64, dest string) error {
 				}
 				return nil
 			}
-			if e := os.MkdirAll(filepath.Dir(path), 0700); e != nil {
+			if e := os.MkdirAll(filepath.Dir(path), 0o700); e != nil {
 				return e
 			}
 

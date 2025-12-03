@@ -11,19 +11,19 @@ import (
 
 type ctxKey string
 
-const ctxProxyBaseKey ctxKey = "proxyBase"
-
-// func NewContext(parent context.Context, w *Wrapper) context.Context {
-// 	return context.WithValue(parent, ctxProxyBaseKey, w)
-// }
+const ctxProxyKey ctxKey = "proxyBase"
 
 func FromContext(ctx context.Context) *Wrapper {
-	w, _ := ctx.Value(ctxProxyBaseKey).(*Wrapper)
+	w, _ := ctx.Value(ctxProxyKey).(*Wrapper)
 	return w
 }
 
 func Rewrite(pr *httputil.ProxyRequest) {
 	w := FromContext(pr.In.Context())
+
+	if w == nil {
+		panic("proxy.Rewrite: no wrapper in context (bug)")
+	}
 
 	pr.Out.URL.Scheme = w.Scheme
 	pr.Out.URL.Host = w.Host

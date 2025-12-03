@@ -12,8 +12,6 @@ import (
 
 var ErrInvalidCaller = errors.New("invalid caller header")
 
-const SigHeader = "X-Mess-Sig"
-
 type RotateRequest struct {
 	Key string `json:"key"` // PEM
 	Crt string `json:"crt"` // PEM

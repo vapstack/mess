@@ -14,31 +14,46 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/vapstack/mess"
 	"github.com/vapstack/mess/internal"
 	"github.com/vapstack/mess/internal/proxy"
+	"github.com/vapstack/mess/internal/sign"
+	"github.com/vapstack/mess/internal/storage"
+	"github.com/vapstack/mess/internal/tlsutil"
 	"github.com/vmihailenco/msgpack/v5"
 )
 
+const (
+	OPS  = 1
+	ROOT = 2
+)
+
 type apiHandler struct {
-	lock   bool
-	local  bool
-	public bool
-	gob    bool
-	method string
-	verify bool
+	dev    bool // allowed to handle requests in dev mode
+	lock   bool // lock api global mutex
+	local  bool // allowed to handle local requests
+	public bool // allowed to handle external requests
+	system bool // system endpoint
+	access int  // access control (0 - everyone, ROOT - root-only, OPS - ops-only)
 
 	fn func(n *node, w *proxy.Wrapper, r *http.Request)
 }
 
 func (ah *apiHandler) call(n *node, w *proxy.Wrapper, r *http.Request, fromLocal bool) {
-	if ah.gob {
+
+	if ah.system {
 		if r.Header.Get("Content-Type") != "application/gob" {
 			w.WriteHeader(http.StatusUnsupportedMediaType)
 			return
 		}
+	}
+
+	if n.dev && !ah.dev {
+		w.WriteHeader(http.StatusNotImplemented)
+		return
 	}
 
 	if fromLocal {
@@ -53,18 +68,18 @@ func (ah *apiHandler) call(n *node, w *proxy.Wrapper, r *http.Request, fromLocal
 		}
 	}
 
-	if ah.method == "" {
-		if r.Method != http.MethodPost {
-			w.WriteHeader(http.StatusMethodNotAllowed)
+	if ah.access == ROOT {
+		if err := sign.Verify(n.pubk, r.Header.Get(sign.Header)); err != nil {
+			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-	} else if r.Method != ah.method {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
 	}
-
-	if ah.verify {
-		if err := verifySignatureHeader(n.pubk, r.Header.Get(internal.SigHeader)); err != nil {
+	if ah.access == OPS || ah.access == ROOT {
+		if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if id, err := strconv.ParseUint(r.TLS.PeerCertificates[0].Subject.CommonName, 10, 64); err != nil || id != 0 {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
@@ -87,7 +102,7 @@ func init() {
 		"rotate": {
 			lock:   true,
 			public: true,
-			verify: true,
+			access: ROOT,
 			fn: func(n *node, w *proxy.Wrapper, r *http.Request) {
 				req := rMust(BodyTo[internal.RotateRequest](w, r, 0))
 				rsCheck(n.rotateCert(req))
@@ -96,7 +111,7 @@ func init() {
 		"upgrade": {
 			lock:   true,
 			public: true,
-			verify: true,
+			access: ROOT,
 			fn: func(n *node, w *proxy.Wrapper, r *http.Request) {
 				b := sMust(io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<20)))
 				rsCheck(n.upgradeNode(b))
@@ -105,7 +120,7 @@ func init() {
 		"shutdown": {
 			lock:   true,
 			public: true,
-			verify: true,
+			access: OPS,
 			fn: func(n *node, w *proxy.Wrapper, r *http.Request) {
 				select {
 				case <-n.ctx.Done():
@@ -119,6 +134,7 @@ func init() {
 		/**/
 
 		"state": {
+			dev:    true,
 			local:  true,
 			public: true,
 			fn: func(n *node, w *proxy.Wrapper, r *http.Request) {
@@ -127,6 +143,7 @@ func init() {
 		},
 
 		"logs": {
+			dev:    true,
 			local:  true,
 			public: true,
 			fn: func(n *node, w *proxy.Wrapper, r *http.Request) {
@@ -145,11 +162,11 @@ func init() {
 		"put": {
 			lock:   true,
 			public: true,
-			verify: true,
+			access: OPS,
 			fn: func(n *node, w *proxy.Wrapper, r *http.Request) {
 				s := rMust(BodyTo[mess.Service](w, r, 0))
 				rFail(s.Name == "", "service name is empty")
-				sCheck(n.putService(s))
+				sCheck(n.apiPutService(s))
 			},
 		},
 
@@ -183,7 +200,7 @@ func init() {
 		"delete": {
 			lock:   true,
 			public: true,
-			verify: true,
+			access: OPS,
 			fn: func(n *node, w *proxy.Wrapper, r *http.Request) {
 				q := r.URL.Query()
 				service, realm := internal.ParseServiceRealm(rMust(getService(q)))
@@ -193,7 +210,7 @@ func init() {
 
 		"store": {
 			public: true,
-			verify: true,
+			access: OPS,
 			fn: func(n *node, w *proxy.Wrapper, r *http.Request) {
 				q := r.URL.Query()
 				service, realm := internal.ParseServiceRealm(rMust(getService(q)))
@@ -204,6 +221,7 @@ func init() {
 		/**/
 
 		"publish": {
+			dev:   true,
 			local: true,
 			fn: func(n *node, w *proxy.Wrapper, r *http.Request) {
 				req := rMust(BodyTo[mess.PublishRequest](w, r, 64<<20))
@@ -212,6 +230,7 @@ func init() {
 			},
 		},
 		"subscribe": {
+			dev:   true,
 			local: true,
 			fn: func(n *node, w *proxy.Wrapper, r *http.Request) {
 				req := rMust(BodyTo[mess.SubscribeRequest](w, r, 0))
@@ -224,6 +243,8 @@ func init() {
 			},
 		},
 		"events": {
+			dev:    true,
+			local:  true, // ~
 			public: true,
 			fn: func(n *node, w *proxy.Wrapper, r *http.Request) {
 				req := rMust(BodyTo[mess.EventsRequest](w, r, 0))
@@ -242,6 +263,7 @@ func init() {
 		/**/
 
 		"emit": {
+			dev:   true,
 			local: true,
 			fn: func(n *node, w *proxy.Wrapper, r *http.Request) {
 				// req := rMust(BodyTo[mess.EmitRequest](w, r, 16<<20))
@@ -249,13 +271,17 @@ func init() {
 			},
 		},
 		"listen": {
+			dev:   true,
 			local: true,
 			fn: func(n *node, w *proxy.Wrapper, r *http.Request) {
 				sCheck(errors.New("not implemented"))
 			},
 		},
+
+		/**/
+
 		"post": {
-			gob:    true,
+			system: true,
 			public: true,
 			fn: func(n *node, w *proxy.Wrapper, r *http.Request) {
 				sCheck(errors.New("not implemented"))
@@ -265,7 +291,7 @@ func init() {
 		/**/
 
 		"pulse": {
-			gob:    true,
+			system: true,
 			public: true,
 			fn: func(n *node, w *proxy.Wrapper, r *http.Request) {
 				s := rMust(n.getPulseState(w, r))
@@ -292,40 +318,6 @@ func getRealm(realm string, w *proxy.Wrapper, q url.Values) string {
 	}
 	return realm
 }
-
-// func getTopic(topic string, q url.Values) (string, error) {
-// 	if topic == "" {
-// 		if topic = q.Get("topic"); topic == "" {
-// 			return topic, fmt.Errorf("no topic specified")
-// 		}
-// 	}
-// 	return topic, nil
-// }
-
-// func getFields(q url.Values) []mess.Field {
-// 	var fields []mess.Field
-// 	for k, v := range q {
-// 		if strings.HasPrefix(k, "meta.") && len(v) > 0 && v[0] != "" {
-// 			fields = append(fields, mess.Field{strings.TrimPrefix(k, "meta."), v[0]})
-// 		}
-// 	}
-// 	return fields
-// }
-
-// func isStream(q url.Values) bool {
-// 	v, _ := strconv.ParseBool(q.Get("stream"))
-// 	return v
-// }
-//
-// func getOffset(q url.Values) int64 {
-// 	v, _ := strconv.ParseInt(q.Get("offset"), 10, 64)
-// 	return v
-// }
-//
-// func getLimit(q url.Values) uint64 {
-// 	v, _ := strconv.ParseUint(q.Get("limit"), 10, 64)
-// 	return v
-// }
 
 var (
 	ErrServiceEmpty    = errors.New("service is not specified")
@@ -364,7 +356,7 @@ func (n *node) getPulseState(w *proxy.Wrapper, r *http.Request) (*mess.NodeState
 	}
 
 	if s.Node != nil && s.Node.ID != w.Caller.NodeID {
-		n.logf("malformed pulse request: body/header node ID mismatch: header: %v, body: %v", w.Caller.NodeID, s.Node.ID)
+		n.logf("malformed pulse request: body/header node id mismatch: header: %v, body: %v", w.Caller.NodeID, s.Node.ID)
 		return nil, internal.ErrInvalidCaller
 	}
 
@@ -390,13 +382,12 @@ func (n *node) serviceCommand(command string, realm, service string) (rerr error
 
 		case "stop":
 			log.Printf("stopping service %v...\n", internal.ServiceName(s.Name, s.Realm))
-			return nil, pm.Stop()
+			pm.Stop()
+			return nil, nil
 
 		case "restart":
 			log.Printf("stopping service %v...\n", internal.ServiceName(s.Name, s.Realm))
-			if err := pm.Stop(); err != nil {
-				return nil, err
-			}
+			pm.Stop()
 			log.Printf("starting service %v...\n", internal.ServiceName(s.Name, s.Realm))
 			return nil, pm.Start()
 
@@ -407,7 +398,7 @@ func (n *node) serviceCommand(command string, realm, service string) (rerr error
 			if err != nil {
 				return nil, err
 			}
-			return nil, n.deleteService(svc)
+			return nil, n.apiDeleteService(svc)
 
 		default:
 			return fmt.Errorf("unknown command: %v", command), nil
@@ -416,17 +407,17 @@ func (n *node) serviceCommand(command string, realm, service string) (rerr error
 	return ErrServiceNotFound, nil
 }
 
-func (n *node) putService(s *mess.Service) error {
-	// lock acquired in handler
-	d := n.stateClone()
+func (n *node) apiPutService(s *mess.Service) error {
+	state := n.stateClone()
 	ls := *n.localServices.Load()
-	for _, svc := range d.Node.Services {
+
+	for _, svc := range state.Node.Services {
 		if svc.Name == s.Name && svc.Realm == s.Realm {
 			if pm := ls.get(s); pm != nil {
-				if err := pm.Update(s); err != nil {
-					return err
-				}
-				if err := n.updateService(s); err != nil {
+
+				pm.UpdateDefinition(s)
+
+				if err := n.apiUpdateService(s); err != nil {
 					return fmt.Errorf("error updating service: %w", err)
 				}
 				return nil
@@ -434,13 +425,16 @@ func (n *node) putService(s *mess.Service) error {
 			return errors.New("bug: failed to find service manager")
 		}
 	}
-	d.Node.Services = append(d.Node.Services, s)
-	if err := n.runService(s); err != nil {
+	state.Node.Services = append(state.Node.Services, s)
+
+	if err := n.initManager(s); err != nil {
 		return fmt.Errorf("error initializing process manager: %w", err)
 	}
-	if err := n.saveState(d); err != nil {
+
+	if err := n.saveState(state); err != nil {
 		return fmt.Errorf("error persisting node state: %w", err)
 	}
+
 	return nil
 }
 
@@ -453,13 +447,13 @@ func (n *node) rotateCert(req *internal.RotateRequest) (error, error) {
 	if err != nil {
 		return nil, fmt.Errorf("error constructing X509 key pair: %w", err)
 	}
-	if err = VerifyKeyCert(n.pool, key, crt); err != nil {
+	if err = tlsutil.VerifyKeyCert(n.pool, key, crt); err != nil {
 		return fmt.Errorf("certificate validation failed: %w", err), nil
 	}
-	if err = internal.WriteFile("node.key", key); err != nil {
+	if err = storage.WriteFile("node.key", key); err != nil {
 		return nil, fmt.Errorf("error persisting key: %w", err)
 	}
-	if err = internal.WriteFile("node.crt", crt); err != nil {
+	if err = storage.WriteFile("node.crt", crt); err != nil {
 		return nil, fmt.Errorf("error persisting certificate: %w", err)
 	}
 	n.cert.Store(&tc)
@@ -473,19 +467,21 @@ func (n *node) storeServicePackage(realm, service string, r io.Reader) (error, e
 	}
 
 	t := filepath.Join(n.tmpdir, rand.Text())
-	f, err := os.OpenFile(t, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	f, err := os.OpenFile(t, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("error creating temp file: %w", err)
 	}
 	defer removeFile(t)
 	defer closeFile(f)
 
-	_, err = io.Copy(f, r)
+	if _, err = io.Copy(f, r); err != nil {
+		return nil, fmt.Errorf("error writing payload: %w", err)
+	}
 	if err = f.Close(); err != nil {
 		return nil, fmt.Errorf("error closing temporary file: %w", err)
 	}
 
-	if err = pm.Store(t); err != nil {
+	if err = pm.StorePackage(t); err != nil {
 		return nil, fmt.Errorf("error storing data package: %w", err)
 	}
 
@@ -504,7 +500,7 @@ func (n *node) upgradeNode(bindata []byte) (error, error) {
 	}
 
 	tmpName := binName + ".temp"
-	f, err := os.OpenFile(tmpName, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0700)
+	f, err := os.OpenFile(tmpName, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o700)
 	if err != nil {
 		return nil, err
 	}
@@ -529,10 +525,6 @@ func (n *node) upgradeNode(bindata []byte) (error, error) {
 }
 
 /**/
-
-// var sendBufPool = sync.Pool{
-// 	New: func() any { return new(bytes.Buffer) },
-// }
 
 type cType byte
 

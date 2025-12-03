@@ -12,48 +12,53 @@ import (
 
 	"github.com/vapstack/mess"
 	"github.com/vapstack/mess/internal"
+	"github.com/vapstack/mess/internal/storage"
 )
 
-func runCommand(cmd *command) (int, error) {
+func (cli *CLI) runCommand(cmd *command) (int, error) {
 	switch cmd.name {
 	case "sync":
-		return cmdSync(cmd)
+		return cli.cmdSync(cmd)
 	case "map":
-		return cmdMap(cmd)
+		return cli.cmdMap(cmd)
 	case "rec":
-		return cmdShowRec(cmd)
+		return cli.cmdShowRec(cmd)
 
 	case "new":
-		return cmdNew(cmd)
+		return cli.cmdNew(cmd)
 	case "gen":
-		return cmdGen(cmd)
+		return cli.cmdGen(cmd)
 	case "add":
-		return cmdAdd(cmd)
+		return cli.cmdAdd(cmd)
 	case "rotate":
-		return cmdRotate(cmd)
+		return cli.cmdRotate(cmd)
 	case "upgrade":
-		return cmdUpgrade(cmd)
+		return cli.cmdUpgrade(cmd)
 	case "shutdown":
-		return cmdShutdown(cmd)
+		return cli.cmdShutdown(cmd)
 
 	case "put":
-		return cmdPut(cmd)
+		return cli.cmdPut(cmd)
 	case "start", "stop", "restart", "delete":
-		return cmdServiceCommand(cmd)
+		return cli.cmdServiceCommand(cmd)
 	case "upload", "store", "deploy":
-		return cmdDeploy(cmd)
+		return cli.cmdDeploy(cmd)
 
 	default:
 		return 1, fmt.Errorf("unknown command: %v", cmd.name)
 	}
 }
 
-func cmdNew(cmd *command) (int, error) {
+func (cli *CLI) cmdNew(cmd *command) (int, error) {
 
 	if len(cmd.args) < 1 || len(cmd.args) > 2 {
 		printCommandUsage(cmd.name, 0)
 		return 1, nil
 	}
+	if !cli.rootMode {
+		return 1, fmt.Errorf("this operation requires a root mess key")
+	}
+
 	loc := strings.Split(cmd.args[0], ".")
 	if len(loc) != 3 {
 		return 1, fmt.Errorf("location must be in form <region>.<country>.<datacenter>")
@@ -61,8 +66,8 @@ func cmdNew(cmd *command) (int, error) {
 
 	/**/
 
-	cmd.mess.state.LastID++
-	nodeID := cmd.mess.state.LastID
+	cli.state.LastID++
+	nodeID := cli.state.LastID
 
 	days := 365
 	if len(cmd.args) == 2 {
@@ -75,14 +80,14 @@ func cmdNew(cmd *command) (int, error) {
 		}
 	}
 
-	keyBytes, crtBytes, err := cmd.mess.createNodeCert(nodeID, days)
+	keyBytes, crtBytes, err := cli.createNodeCert(nodeID, days)
 	if err != nil {
 		return 1, err
 	}
-	if err = internal.WriteFile("node.key", keyBytes); err != nil {
+	if err = storage.WriteFile("node.key", keyBytes); err != nil {
 		return 1, fmt.Errorf("write error: %w", err)
 	}
-	if err = internal.WriteFile("node.crt", crtBytes); err != nil {
+	if err = storage.WriteFile("node.crt", crtBytes); err != nil {
 		return 1, fmt.Errorf("write error: %w", err)
 	}
 
@@ -103,11 +108,11 @@ func cmdNew(cmd *command) (int, error) {
 		},
 		Map: make(mess.NodeMap),
 	}
-	if err = internal.WriteObject("node.json", state); err != nil {
+	if err = storage.WriteObject("node.json", state); err != nil {
 		return 1, fmt.Errorf("write error: %w", err)
 	}
 
-	if err = cmd.mess.saveMess(); err != nil {
+	if err = cli.saveState(); err != nil {
 		_ = os.Remove("node.json")
 		_ = os.Remove("node.key")
 		_ = os.Remove("node.crt")
@@ -117,16 +122,27 @@ func cmdNew(cmd *command) (int, error) {
 	return 0, nil
 }
 
-func cmdGen(cmd *command) (int, error) {
+func (cli *CLI) cmdGen(cmd *command) (int, error) {
 
 	if len(cmd.args) != 1 {
 		printCommandUsage(cmd.name, 0)
 		return 1, nil
 	}
+	if !cli.rootMode {
+		return 1, fmt.Errorf("this operation requires a root mess key")
+	}
 
-	nodeID, err := strconv.ParseUint(cmd.args[0], 10, 64)
-	if err != nil {
-		return 1, fmt.Errorf("parse node id: %w", err)
+	nodeID := uint64(0)
+
+	if arg := cmd.args[0]; arg != "ops" {
+		var err error
+		nodeID, err = strconv.ParseUint(cmd.args[0], 10, 64)
+		if err != nil {
+			return 1, fmt.Errorf("parse node id: %w", err)
+		}
+		if cli.state.Map.Get(nodeID) == nil {
+			return 1, fmt.Errorf("node %v not found", nodeID)
+		}
 	}
 
 	days := 365
@@ -140,28 +156,36 @@ func cmdGen(cmd *command) (int, error) {
 		}
 	}
 
-	keyBytes, crtBytes, err := cmd.mess.createNodeCert(nodeID, days)
+	keyBytes, crtBytes, err := cli.createNodeCert(nodeID, days)
 	if err != nil {
 		return 1, err
 	}
-	if err = internal.WriteFile("node.key", keyBytes); err != nil {
-		return 1, fmt.Errorf("write error: %w", err)
+
+	keyFile := "node.key"
+	crtFile := "node.crt"
+
+	if nodeID == 0 {
+		keyFile = "ops.key"
+		crtFile = "ops.crt"
 	}
-	if err = internal.WriteFile("node.crt", crtBytes); err != nil {
-		return 1, fmt.Errorf("write error: %w", err)
+
+	if err = storage.WriteFile(keyFile, keyBytes); err != nil {
+		return 1, fmt.Errorf("write error (key): %w", err)
+	}
+	if err = storage.WriteFile(crtFile, crtBytes); err != nil {
+		return 1, fmt.Errorf("write error (crt): %w", err)
 	}
 
 	return 0, nil
 }
 
-func cmdRotate(cmd *command) (int, error) {
+func (cli *CLI) cmdRotate(cmd *command) (int, error) {
 	if len(cmd.args) > 2 {
 		printCommandUsage(cmd.name, 0)
 		return 1, nil
 	}
-
-	if !cmd.mess.rootMode {
-		return 1, fmt.Errorf("no mess key found")
+	if !cli.rootMode {
+		return 1, fmt.Errorf("this operation requires a root mess key")
 	}
 
 	days := 365
@@ -186,9 +210,9 @@ func cmdRotate(cmd *command) (int, error) {
 
 	updated := 0
 
-	lazySync(cmd)
+	cli.lazySync()
 
-	ec := cmd.eachNodeProgress(func(rec *mess.Node) error {
+	ec := cli.eachNodeProgress(func(rec *mess.Node) error {
 
 		if !force {
 			remainDays := float64(time.Unix(rec.CertExpires, 0).Sub(time.Now()) / (24 * time.Hour))
@@ -197,12 +221,12 @@ func cmdRotate(cmd *command) (int, error) {
 			}
 		}
 
-		keyPEM, crtPEM, e := cmd.mess.createNodeCert(rec.ID, days)
+		keyPEM, crtPEM, e := cli.createNodeCert(rec.ID, days)
 		if e != nil {
 			return e
 		}
 
-		e = cmd.call(rec.Address(), "rotate", internal.RotateRequest{
+		e = cli.call(rec.Address(), "rotate", internal.RotateRequest{
 			Key: string(keyPEM),
 			Crt: string(crtPEM),
 		}, nil)
@@ -217,7 +241,7 @@ func cmdRotate(cmd *command) (int, error) {
 	})
 
 	if updated > 0 {
-		if err := cmd.mess.saveMess(); err != nil {
+		if err := cli.saveState(); err != nil {
 			return 1, fmt.Errorf("updating mess state: %w", err)
 		}
 	}
@@ -225,7 +249,7 @@ func cmdRotate(cmd *command) (int, error) {
 	return ec, nil
 }
 
-func cmdAdd(cmd *command) (int, error) {
+func (cli *CLI) cmdAdd(cmd *command) (int, error) {
 	if len(cmd.args) != 1 {
 		printCommandUsage(cmd.name, 0)
 		return 1, nil
@@ -239,7 +263,7 @@ func cmdAdd(cmd *command) (int, error) {
 
 	ec := pstartf(addr).cover(func() error {
 		state := new(mess.NodeState)
-		if err := cmd.call(addr, "state", nil, state); err != nil {
+		if err := cli.call(addr, "state", nil, state); err != nil {
 			return err
 		}
 		if state.Node == nil {
@@ -248,21 +272,19 @@ func cmdAdd(cmd *command) (int, error) {
 		if state.Node.ID == 0 {
 			return fmt.Errorf("node is running with id 0, such id cannot be used by a node (invalid id)")
 		}
-		for id := range cmd.mess.state.Map {
-			if id == state.Node.ID {
-				return fmt.Errorf("the node is either already added or running with a node id already taken (duplicate node id)")
-			}
+		if cli.state.Map.Get(state.Node.ID) != nil {
+			return fmt.Errorf("the node is either already added or running with a node id already taken (duplicate node id)")
 		}
-		if err := cmd.call(addr, "pulse", cmd.mess.state, state); err != nil {
+		if err := cli.call(addr, "pulse", cli.state, state); err != nil {
 			return err
 		}
-		return cmd.applyState(state, addr)
+		return cli.applyState(state, addr)
 	})
 
 	return ec, nil
 }
 
-func cmdSync(cmd *command) (int, error) {
+func (cli *CLI) cmdSync(cmd *command) (int, error) {
 
 	if len(cmd.args) > 0 {
 
@@ -274,21 +296,21 @@ func cmdSync(cmd *command) (int, error) {
 			return 1, fmt.Errorf("cannot parse IP: %v", addr)
 		}
 		return pstartf(addr).cover(func() error {
-			return cmd.fetchState(addr)
+			return cli.fetchState(addr)
 		}), nil
 	}
 
-	if len(cmd.mess.state.Map) == 0 {
+	if len(cli.state.Map) == 0 {
 		return 1, fmt.Errorf("no known nodes")
 	}
 
-	ec := cmd.eachNodeProgress(func(rec *mess.Node) error {
-		return cmd.fetchState(rec.Address())
+	ec := cli.eachNodeProgress(func(rec *mess.Node) error {
+		return cli.fetchState(rec.Address())
 	})
 	return ec, nil
 }
 
-func lazySync(cmd *command) {
+func (cli *CLI) lazySync() {
 	pp := pstartf("Sync: ")
 	defer func() {
 		if v := recover(); v != nil {
@@ -296,8 +318,8 @@ func lazySync(cmd *command) {
 		}
 	}()
 
-	ids := make([]uint64, 0, len(cmd.mess.state.Map))
-	for id := range cmd.mess.state.Map {
+	ids := make([]uint64, 0, len(cli.state.Map))
+	for id := range cli.state.Map {
 		ids = append(ids, id)
 	}
 	slices.Sort(ids)
@@ -308,16 +330,16 @@ func lazySync(cmd *command) {
 	padding := len(strconv.Itoa(total))
 
 	for i, id := range ids {
-		if err := cmd.ctx.Err(); err != nil {
+		if err := cli.ctx.Err(); err != nil {
 			pp.fail(err)
 			return
 		}
 
-		rec := cmd.mess.state.Map[id]
+		rec := cli.state.Map[id]
 
 		pp.printf("Sync: %*v/%v - %v - %v", padding, i, total, rec.ID, rec.Address())
 
-		if err := cmd.fetchState(rec.Address()); err != nil {
+		if err := cli.fetchState(rec.Address()); err != nil {
 			failed = append(failed, strconv.FormatUint(rec.ID, 10))
 		}
 	}
@@ -331,13 +353,13 @@ func lazySync(cmd *command) {
 	}
 }
 
-func cmdMap(cmd *command) (int, error) {
+func (cli *CLI) cmdMap(cmd *command) (int, error) {
 	if len(cmd.args) > 1 {
 		return 1, fmt.Errorf("too many arguments")
 	}
 	if len(cmd.args) > 0 {
 		if cmd.args[0] == "json" {
-			b, err := json.MarshalIndent(cmd.mess.state, "", "    ")
+			b, err := json.MarshalIndent(cli.state, "", "    ")
 			if err != nil {
 				return 1, err
 			}
@@ -347,12 +369,12 @@ func cmdMap(cmd *command) (int, error) {
 			return 1, fmt.Errorf("unknown argument: %v", cmd.args[0])
 		}
 	}
-	if len(cmd.mess.state.Map) == 0 {
+	if len(cli.state.Map) == 0 {
 		return 1, fmt.Errorf("no known nodes")
 	}
 
-	recs := make([]*mess.Node, 0, len(cmd.mess.state.Map))
-	for _, rec := range cmd.mess.state.Map {
+	recs := make([]*mess.Node, 0, len(cli.state.Map))
+	for _, rec := range cli.state.Map {
 		recs = append(recs, rec)
 	}
 
@@ -386,7 +408,7 @@ func cmdMap(cmd *command) (int, error) {
 	return 0, nil
 }
 
-func cmdShowRec(cmd *command) (int, error) {
+func (cli *CLI) cmdShowRec(cmd *command) (int, error) {
 	if len(cmd.args) > 1 {
 		printCommandUsage(cmd.name, 0)
 		return 1, nil
@@ -418,11 +440,15 @@ func cmdShowRec(cmd *command) (int, error) {
 	return 0, nil
 }
 
-func cmdUpgrade(cmd *command) (int, error) {
+func (cli *CLI) cmdUpgrade(cmd *command) (int, error) {
 	if len(cmd.args) < 2 || len(cmd.args) > 3 {
 		printCommandUsage(cmd.name, 0)
 		return 1, nil
 	}
+	if !cli.rootMode {
+		return 1, fmt.Errorf("this operation requires a root mess key")
+	}
+
 	node := cmd.args[0]
 	file := cmd.args[1]
 
@@ -438,24 +464,24 @@ func cmdUpgrade(cmd *command) (int, error) {
 
 	ec := 0
 	if node == "all" {
-		lazySync(cmd)
-
-		ec = cmd.eachNodeProgress(func(rec *mess.Node) error {
-			if e := cmd.post(rec.Address(), "upgrade", "", file); e != nil {
+		cli.lazySync()
+		ec = cli.eachNodeProgress(func(rec *mess.Node) error {
+			if e := cli.post(rec.Address(), "upgrade", "", file); e != nil {
 				return e
 			}
 			if now {
-				return cmd.call(rec.Address(), "shutdown", nil, nil)
+				return cli.call(rec.Address(), "shutdown", nil, nil)
 			}
 			return nil
 		})
+
 	} else {
-		ec = cmd.nodeProgress(node).cover(func() error {
-			if e := cmd.post(cmd.addr(node), "upgrade", "", file); e != nil {
+		ec = cli.nodeProgress(node).cover(func() error {
+			if e := cli.post(cli.addr(node), "upgrade", "", file); e != nil {
 				return e
 			}
 			if now {
-				return cmd.call(cmd.addr(node), "shutdown", nil, nil)
+				return cli.call(cli.addr(node), "shutdown", nil, nil)
 			}
 			return nil
 		})
@@ -463,7 +489,7 @@ func cmdUpgrade(cmd *command) (int, error) {
 	return ec, nil
 }
 
-func cmdShutdown(cmd *command) (int, error) {
+func (cli *CLI) cmdShutdown(cmd *command) (int, error) {
 	if len(cmd.args) != 1 {
 		printCommandUsage(cmd.name, 0)
 		return 1, nil
@@ -471,17 +497,17 @@ func cmdShutdown(cmd *command) (int, error) {
 	node := cmd.args[0]
 
 	if node == "all" {
-		lazySync(cmd)
-		return cmd.eachNodeProgress(func(rec *mess.Node) error {
-			return cmd.call(rec.Address(), "shutdown", nil, nil)
+		cli.lazySync()
+		return cli.eachNodeProgress(func(rec *mess.Node) error {
+			return cli.call(rec.Address(), "shutdown", nil, nil)
 		}), nil
 	}
-	return cmd.nodeProgress(node).cover(func() error {
-		return cmd.call(cmd.addr(node), "shutdown", nil, nil)
+	return cli.nodeProgress(node).cover(func() error {
+		return cli.call(cli.addr(node), "shutdown", nil, nil)
 	}), nil
 }
 
-func cmdPut(cmd *command) (int, error) {
+func (cli *CLI) cmdPut(cmd *command) (int, error) {
 	if len(cmd.args) != 2 {
 		printCommandUsage(cmd.name, 0)
 		return 1, nil
@@ -494,10 +520,10 @@ func cmdPut(cmd *command) (int, error) {
 	}
 
 	s := new(mess.Service)
-	if err := internal.ReadObject(file, s); err != nil {
+	if err := storage.ReadObject(file, s); err != nil {
 		return 1, err
 	}
-	if cmd.mess.state.RequireRealm && s.Realm == "" {
+	if cli.state.RequireRealm && s.Realm == "" {
 		return 1, fmt.Errorf("realm is empty")
 	}
 	if s.Name == "" {
@@ -514,24 +540,24 @@ func cmdPut(cmd *command) (int, error) {
 	s.Active = false
 
 	if node == "all" {
-		lazySync(cmd)
-		return cmd.eachNodeProgress(func(rec *mess.Node) error {
-			return cmd.call(rec.Address(), "put", s, nil)
+		cli.lazySync()
+		return cli.eachNodeProgress(func(rec *mess.Node) error {
+			return cli.call(rec.Address(), "put", s, nil)
 		}), nil
 	}
-	return cmd.nodeProgress(node).cover(func() error {
-		return cmd.call(cmd.addr(node), "put", s, nil)
+	return cli.nodeProgress(node).cover(func() error {
+		return cli.call(cli.addr(node), "put", s, nil)
 	}), nil
 }
 
-func cmdServiceCommand(cmd *command) (int, error) {
+func (cli *CLI) cmdServiceCommand(cmd *command) (int, error) {
 	if len(cmd.args) != 2 {
 		printCommandUsage(cmd.name, 0)
 		return 1, nil
 	}
 	service, realm := internal.ParseServiceRealm(cmd.args[0])
 
-	if cmd.mess.state.RequireRealm && realm == "" {
+	if cli.state.RequireRealm && realm == "" {
 		return 1, fmt.Errorf("realm is empty")
 	}
 
@@ -540,17 +566,17 @@ func cmdServiceCommand(cmd *command) (int, error) {
 	ep := fmt.Sprintf("%v?service=%v&realm=%v", cmd.name, realm, service)
 
 	if node == "all" {
-		lazySync(cmd)
-		return cmd.eachNodeProgress(func(rec *mess.Node) error {
-			return cmd.call(rec.Address(), ep, nil, nil)
+		cli.lazySync()
+		return cli.eachNodeProgress(func(rec *mess.Node) error {
+			return cli.call(rec.Address(), ep, nil, nil)
 		}), nil
 	}
-	return cmd.nodeProgress(node).cover(func() error {
-		return cmd.call(cmd.addr(node), ep, nil, nil)
+	return cli.nodeProgress(node).cover(func() error {
+		return cli.call(cli.addr(node), ep, nil, nil)
 	}), nil
 }
 
-func cmdDeploy(cmd *command) (int, error) {
+func (cli *CLI) cmdDeploy(cmd *command) (int, error) {
 	if len(cmd.args) != 3 {
 		printCommandUsage(cmd.name, 0)
 		return 1, nil
@@ -560,7 +586,7 @@ func cmdDeploy(cmd *command) (int, error) {
 
 	service, realm := internal.ParseServiceRealm(cmd.args[1])
 
-	if cmd.mess.state.RequireRealm && realm == "" {
+	if cli.state.RequireRealm && realm == "" {
 		return 1, fmt.Errorf("realm is empty")
 	}
 
@@ -581,24 +607,24 @@ func cmdDeploy(cmd *command) (int, error) {
 	}
 
 	if node == "all" {
-		lazySync(cmd)
-		return cmd.eachNodeProgress(func(rec *mess.Node) error {
-			if err := cmd.post(rec.Address(), "store", qry, file); err != nil {
+		cli.lazySync()
+		return cli.eachNodeProgress(func(rec *mess.Node) error {
+			if err := cli.post(rec.Address(), "store", qry, file); err != nil {
 				return err
 			}
 			if deploy {
-				return cmd.call(rec.Address(), ep, nil, nil)
+				return cli.call(rec.Address(), ep, nil, nil)
 			}
 			return nil
 		}), nil
 	}
 
-	return cmd.nodeProgress(node).cover(func() error {
-		if err := cmd.post(cmd.addr(node), "store", qry, file); err != nil {
+	return cli.nodeProgress(node).cover(func() error {
+		if err := cli.post(cli.addr(node), "store", qry, file); err != nil {
 			return err
 		}
 		if deploy {
-			return cmd.call(cmd.addr(node), ep, nil, nil)
+			return cli.call(cli.addr(node), ep, nil, nil)
 		}
 		return nil
 	}), nil

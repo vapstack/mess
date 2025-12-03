@@ -8,10 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/binary"
 	"encoding/gob"
-	"encoding/hex"
-	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -28,8 +25,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/klauspost/compress/gzhttp"
 	"github.com/vapstack/mess"
 	"github.com/vapstack/mess/internal"
+	"github.com/vapstack/mess/internal/sign"
+	"github.com/vapstack/mess/internal/storage"
+	"github.com/vapstack/mess/internal/tlsutil"
 )
 
 func main() {
@@ -41,25 +42,25 @@ func main() {
 	}
 	binPath := filepath.Dir(binName)
 
-	m := &messConfig{
+	cli := &CLI{
 		path:     binPath,
 		messFile: filepath.Join(binPath, "mess.json"),
 	}
 
 	/**/
 
-	m.state = &messState{
+	cli.state = &State{
 		Map: make(mess.NodeMap),
 	}
-	if _, err = os.Stat(m.messFile); err != nil {
+	if _, err = os.Stat(cli.messFile); err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			log.Fatalln("fatal:", err)
 		}
-		if err = m.saveMess(); err != nil {
+		if err = cli.saveState(); err != nil {
 			log.Fatalln("fatal: saving mess state:", err)
 		}
 	} else {
-		if err = internal.ReadObject(m.messFile, &m.state); err != nil {
+		if err = storage.ReadObject(cli.messFile, &cli.state); err != nil {
 			log.Fatalln("fatal: reading mess nodes:", err)
 		}
 	}
@@ -78,19 +79,20 @@ func main() {
 	}
 
 	if _, err = os.Stat(messKeyFile); err == nil {
-		m.keyBytes, err = internal.ReadFile(messKeyFile)
+		cli.keyBytes, err = storage.ReadFile(messKeyFile)
 		if err != nil {
 			log.Fatalln("fatal:", err)
 		}
-		m.rootMode = true
+		cli.rootMode = true
 	}
-	m.crtBytes, err = internal.ReadFile(messCrtFile)
+
+	cli.crtBytes, err = storage.ReadFile(messCrtFile)
 	if err != nil {
 		log.Fatalln("fatal:", err)
 	}
 
-	if m.rootMode {
-		m.key, m.crt, err = parseKeyCert(m.keyBytes, m.crtBytes)
+	if cli.rootMode {
+		cli.key, cli.crt, err = parseKeyCert(cli.keyBytes, cli.crtBytes)
 		if err != nil {
 			log.Fatalln("fatal: parsing CA:", err)
 		}
@@ -101,7 +103,12 @@ func main() {
 		return
 	}
 
-	cmd := parseCommand(os.Args[1:])
+	cli.ctx, _ = signal.NotifyContext(context.Background(), os.Interrupt, os.Kill, syscall.SIGTERM, syscall.SIGHUP)
+
+	cmd := &command{
+		name: os.Args[1],
+		args: os.Args[2:],
+	}
 
 	noArgs := map[string]struct{}{
 		"sync":   {},
@@ -116,53 +123,32 @@ func main() {
 			return
 		}
 	}
-	cmd.mess = m
 
 	pool := x509.NewCertPool()
-	if ok := pool.AppendCertsFromPEM(m.crtBytes); !ok {
+	if ok := pool.AppendCertsFromPEM(cli.crtBytes); !ok {
 		log.Println("fatal: failed to append certificate to the pool")
 		return
 	}
 
-	crt, err := cmd.mess.getClientCert()
+	crt, err := cli.getClientCert()
 	if err != nil {
 		log.Println("fatal:", err)
 		return
 	}
 
-	tlsVerifyOptions := x509.VerifyOptions{
-		Roots: pool,
-	}
-	cmd.client = &http.Client{
-		Transport: &http.Transport{
+	cli.client = &http.Client{
+		Transport: gzhttp.Transport(&http.Transport{
 			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true,
-				Certificates:       []tls.Certificate{crt},
-				VerifyPeerCertificate: func(raw [][]byte, _ [][]*x509.Certificate) error {
-					if len(raw) == 0 || len(raw[0]) == 0 {
-						return mess.ErrNoCertProvided
-					}
-					cert, e := x509.ParseCertificate(raw[0])
-					if e != nil {
-						return e
-					}
-					nid, e := strconv.ParseUint(cert.Subject.CommonName, 10, 64)
-					if e != nil || nid == 0 {
-						return mess.ErrInvalidNode
-					}
-					if len(cert.Subject.Organization) == 0 || cert.Subject.Organization[0] != mess.ServiceName {
-						return fmt.Errorf("invalid")
-					}
-					_, e = cert.Verify(tlsVerifyOptions)
-					return e
-				},
-				RootCAs:    pool,
-				MinVersion: tls.VersionTLS13,
+				InsecureSkipVerify:    true,
+				Certificates:          []tls.Certificate{crt},
+				VerifyPeerCertificate: tlsutil.PeerCertVerifier(0, pool),
+				RootCAs:               pool,
+				MinVersion:            tls.VersionTLS13,
 			},
-		},
+		}),
 	}
 
-	if code, err := runCommand(cmd); err != nil {
+	if code, err := cli.runCommand(cmd); err != nil {
 		log.Fatalln("error:", err)
 	} else if code > 0 {
 		os.Exit(code)
@@ -172,20 +158,17 @@ func main() {
 /**/
 
 type command struct {
-	name   string
-	args   []string
-	mess   *messConfig
-	client *http.Client
-	ctx    context.Context
+	name string
+	args []string
 }
 
-type messState struct {
+type State struct {
 	RequireRealm bool         `json:"requireRealm"`
 	Map          mess.NodeMap `json:"map"`
 	LastID       uint64       `json:"lastNode"`
 }
 
-type messConfig struct {
+type CLI struct {
 	path     string
 	messFile string
 
@@ -194,30 +177,34 @@ type messConfig struct {
 	crtBytes []byte
 	crt      *x509.Certificate
 
-	state *messState
+	state *State
+
+	client *http.Client
+	ctx    context.Context
 
 	rootMode bool
 }
 
-func (mc *messConfig) saveMess() error {
-	return internal.WriteObject(mc.messFile, mc.state)
+func (cli *CLI) saveState() error {
+	return storage.WriteObject(cli.messFile, cli.state)
 }
 
-func (mc *messConfig) loadNodeCert() ([]byte, []byte, error) {
-	keyBytes, e := internal.ReadFile(filepath.Join(mc.path, "node.key"))
+func (cli *CLI) loadOpsCert() ([]byte, []byte, error) {
+	keyBytes, e := storage.ReadFile(filepath.Join(cli.path, "ops.key"))
 	if e != nil {
-		return nil, nil, fmt.Errorf("reading node.key: %w", e)
+		return nil, nil, fmt.Errorf("reading ops.key: %w", e)
 	}
-	crtBytes, e := internal.ReadFile(filepath.Join(mc.path, "node.crt"))
+	crtBytes, e := storage.ReadFile(filepath.Join(cli.path, "ops.crt"))
 	if e != nil {
-		return nil, nil, fmt.Errorf("reading node.crt: %w", e)
+		return nil, nil, fmt.Errorf("reading ops.crt: %w", e)
 	}
 	return keyBytes, crtBytes, nil
 }
 
-func (mc *messConfig) getClientCert() (tls.Certificate, error) {
-	if mc.rootMode {
-		root, err := tls.X509KeyPair(mc.crtBytes, mc.keyBytes)
+func (cli *CLI) getClientCert() (tls.Certificate, error) {
+
+	if cli.rootMode {
+		root, err := tls.X509KeyPair(cli.crtBytes, cli.keyBytes)
 		if err != nil {
 			return root, fmt.Errorf("failed to create x509 key pair: %w", err)
 		}
@@ -226,18 +213,18 @@ func (mc *messConfig) getClientCert() (tls.Certificate, error) {
 
 	var crt tls.Certificate
 
-	keyPEM, crtPEM, err := mc.loadNodeCert()
+	keyPEM, crtPEM, err := cli.loadOpsCert()
 	if err != nil {
-		return crt, fmt.Errorf("no mess.key found; reading node.key: %w", err)
+		return crt, fmt.Errorf("no mess.key found;  %w", err)
 	}
-	crt, err = tls.X509KeyPair(keyPEM, crtPEM)
+	crt, err = tls.X509KeyPair(crtPEM, keyPEM)
 	if err != nil {
-		return crt, fmt.Errorf("failed to create x509 key pair: %w", err)
+		return crt, fmt.Errorf("failed to create x509 key pair for ops certificate: %w", err)
 	}
 	return crt, nil
 }
 
-func (mc *messConfig) createNodeCert(nodeID uint64, days int) ([]byte, []byte, error) {
+func (cli *CLI) createNodeCert(nodeID uint64, days int) ([]byte, []byte, error) {
 	publicKey, privateKey, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to generate key: %w", err)
@@ -256,7 +243,7 @@ func (mc *messConfig) createNodeCert(nodeID uint64, days int) ([]byte, []byte, e
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
 	}
 
-	certDER, err := x509.CreateCertificate(rand.Reader, &tmpl, mc.crt, publicKey, mc.key)
+	certDER, err := x509.CreateCertificate(rand.Reader, &tmpl, cli.crt, publicKey, cli.key)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create certificate: %w", err)
 	}
@@ -279,62 +266,64 @@ func (mc *messConfig) createNodeCert(nodeID uint64, days int) ([]byte, []byte, e
 
 /**/
 
-func (cmd *command) fetchState(addr string) error {
+func (cli *CLI) fetchState(addr string) error {
 	state := new(mess.NodeState)
-	if err := cmd.call(addr, "state", nil, state); err != nil {
+	if err := cli.call(addr, "state", nil, state); err != nil {
 		return err
 	}
-	return cmd.applyState(state, addr)
+	return cli.applyState(state, addr)
 }
 
-func (cmd *command) applyState(state *mess.NodeState, addr string) error {
+func (cli *CLI) applyState(state *mess.NodeState, addr string) error {
+
 	if state.Node != nil {
 		state.Node.Addr = addr
 		state.Node.LastSync = time.Now().Unix()
-		cmd.mess.state.Map[state.Node.ID] = state.Node
-		if state.Node.ID > cmd.mess.state.LastID {
-			cmd.mess.state.LastID = state.Node.ID
+		cli.state.Map[state.Node.ID] = state.Node
+		if state.Node.ID > cli.state.LastID {
+			cli.state.LastID = state.Node.ID
 		}
 	}
 
 	for _, rec := range state.Map {
-		if _, exist := cmd.mess.state.Map[rec.ID]; !exist {
-			cmd.mess.state.Map[rec.ID] = rec
+		if _, exist := cli.state.Map[rec.ID]; !exist {
+			cli.state.Map[rec.ID] = rec
 		}
-		if rec.ID > cmd.mess.state.LastID {
-			cmd.mess.state.LastID = rec.ID
+		if rec.ID > cli.state.LastID {
+			cli.state.LastID = rec.ID
 		}
 	}
 
-	if err := cmd.mess.saveMess(); err != nil {
+	if err := cli.saveState(); err != nil {
 		return fmt.Errorf("call succeeded, but saving mess failed: %w", err)
 	}
 	return nil
 }
 
-func (cmd *command) eachNodeProgress(fn func(rec *mess.Node) error) int {
+func (cli *CLI) eachNodeProgress(fn func(rec *mess.Node) error) int {
 	ec := 0
-	ids := make([]uint64, 0, len(cmd.mess.state.Map))
-	for id := range cmd.mess.state.Map {
+	ids := make([]uint64, 0, len(cli.state.Map))
+	for id := range cli.state.Map {
 		ids = append(ids, id)
 	}
 	slices.Sort(ids)
+
 	for _, id := range ids {
-		if cmd.ctx.Err() != nil {
+		if cli.ctx.Err() != nil {
 			return ec
 		}
-		rec := cmd.mess.state.Map[id]
+		rec := cli.state.Map[id]
 		ec += nodeProgress(rec).cover(func() error { return fn(rec) })
 	}
 	return ec
 }
 
-func (cmd *command) addr(node string) string {
+func (cli *CLI) addr(node string) string {
 	nid, _ := strconv.ParseUint(node, 10, 64)
-	if rec, ok := cmd.mess.state.Map[nid]; ok {
+	if rec, ok := cli.state.Map[nid]; ok {
 		return rec.Address()
 	}
-	for _, rec := range cmd.mess.state.Map {
+	for _, rec := range cli.state.Map {
 		if addr := rec.Address(); addr == node {
 			return addr
 		}
@@ -342,12 +331,12 @@ func (cmd *command) addr(node string) string {
 	return node
 }
 
-func (cmd *command) nodeProgress(node string) *pprinter {
+func (cli *CLI) nodeProgress(node string) *pprinter {
 	nid, _ := strconv.ParseUint(node, 10, 64)
-	if rec, ok := cmd.mess.state.Map[nid]; ok {
+	if rec, ok := cli.state.Map[nid]; ok {
 		return nodeProgress(rec)
 	}
-	for _, rec := range cmd.mess.state.Map {
+	for _, rec := range cli.state.Map {
 		if rec.Address() == node {
 			return nodeProgress(rec)
 		}
@@ -357,7 +346,7 @@ func (cmd *command) nodeProgress(node string) *pprinter {
 
 /**/
 
-func (cmd *command) post(host, endpoint, query string, filename string) error {
+func (cli *CLI) post(host, endpoint, query string, filename string) error {
 	dst := fmt.Sprintf("https://%v:%v/%v%v", host, mess.PublicPort, endpoint, query)
 
 	f, err := os.Open(filename)
@@ -366,15 +355,18 @@ func (cmd *command) post(host, endpoint, query string, filename string) error {
 	}
 	defer func() { _ = f.Close() }()
 
-	req, err := http.NewRequestWithContext(cmd.ctx, http.MethodPost, dst, f)
+	req, err := http.NewRequestWithContext(cli.ctx, http.MethodPost, dst, f)
 	if err != nil {
 		return err
 	}
 	req.Header.Set(mess.CallerHeader, internal.ConstructCaller(0, "", mess.ServiceName))
 	req.Header.Set(mess.TargetServiceHeader, mess.ServiceName)
-	req.Header.Set(internal.SigHeader, signatureHeader(cmd.mess.key.(ed25519.PrivateKey)))
 
-	res, err := cmd.client.Do(req)
+	if cli.key != nil {
+		req.Header.Set(sign.Header, sign.Timestamp(cli.key.(ed25519.PrivateKey)))
+	}
+
+	res, err := cli.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("request: %w", err)
 	}
@@ -385,47 +377,48 @@ func (cmd *command) post(host, endpoint, query string, filename string) error {
 		if e != nil {
 			return fmt.Errorf("status: %v, cannot read body: %w", res.StatusCode, e)
 		}
-		return fmt.Errorf("status: %v, body: %v", res.StatusCode, string(b))
+		if len(b) > 0 {
+			return fmt.Errorf("status: %v, body: %v", res.StatusCode, string(b))
+		} else {
+			return fmt.Errorf("status: %v - %v", res.StatusCode, http.StatusText(res.StatusCode))
+		}
 	}
 	return nil
 
 }
 
-func (cmd *command) call(host, endpoint string, data any, result any) error {
-	return cmd.calltype("gob", host, endpoint, data, result)
-}
-
-func (cmd *command) calltype(ctype, host, endpoint string, data any, result any) error {
+func (cli *CLI) call(host, endpoint string, data any, result any) error {
 	if host == "" {
 		return errors.New("no host address")
 	}
+
 	dst := fmt.Sprintf("https://%v:%v/%v", host, mess.PublicPort, endpoint)
+
 	buf := new(bytes.Buffer)
+
 	if data != nil {
-		if ctype == "gob" {
-			if err := gob.NewEncoder(buf).Encode(data); err != nil {
-				return err
-			}
-		} else {
-			if err := json.NewEncoder(buf).Encode(data); err != nil {
-				return err
-			}
+		if err := gob.NewEncoder(buf).Encode(data); err != nil {
+			return err
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(cmd.ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(cli.ctx, 5*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, dst, buf)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", "application/"+ctype)
+
+	req.Header.Set("Content-Type", "application/gob")
 	req.Header.Set(mess.CallerHeader, internal.ConstructCaller(0, "", mess.ServiceName))
 	req.Header.Set(mess.TargetServiceHeader, mess.ServiceName)
-	req.Header.Set(internal.SigHeader, signatureHeader(cmd.mess.key.(ed25519.PrivateKey)))
 
-	res, err := cmd.client.Do(req)
+	if cli.key != nil {
+		req.Header.Set(sign.Header, sign.Timestamp(cli.key.(ed25519.PrivateKey)))
+	}
+
+	res, err := cli.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("request: %w", err)
 	}
@@ -436,32 +429,22 @@ func (cmd *command) calltype(ctype, host, endpoint string, data any, result any)
 		if e != nil {
 			return fmt.Errorf("status: %v, cannot read body: %w", res.StatusCode, e)
 		}
-		return fmt.Errorf("status: %v, body: %v", res.StatusCode, string(b))
+		if len(b) > 0 {
+			return fmt.Errorf("status: %v, body: %v", res.StatusCode, string(b))
+		} else {
+			return fmt.Errorf("status: %v - %v", res.StatusCode, http.StatusText(res.StatusCode))
+		}
 	}
 
 	if result != nil {
-		if ctype == "gob" {
-			if err = gob.NewDecoder(res.Body).Decode(result); err != nil {
-				return fmt.Errorf("reading body: %w", err)
-			}
-		} else {
-			if err = json.NewDecoder(res.Body).Decode(result); err != nil {
-				return fmt.Errorf("reading body: %w", err)
-			}
+		if err = gob.NewDecoder(res.Body).Decode(result); err != nil {
+			return fmt.Errorf("reading body: %w", err)
 		}
 	}
 	return nil
 }
 
 /**/
-
-func parseCommand(args []string) *command {
-	cmd := new(command)
-	cmd.ctx, _ = signal.NotifyContext(context.Background(), os.Interrupt, os.Kill, syscall.SIGTERM, syscall.SIGHUP)
-
-	cmd.name, cmd.args = args[0], args[1:]
-	return cmd
-}
 
 func printUsage(section ...string) {
 	if len(section) == 0 {
@@ -545,7 +528,7 @@ func createCA(messKeyFile, messCrtFile string) error {
 		return fmt.Errorf("failed to marshal key: %w", err)
 	}
 
-	keyFile, err := os.OpenFile(messKeyFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	keyFile, err := os.OpenFile(messKeyFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
@@ -555,7 +538,7 @@ func createCA(messKeyFile, messCrtFile string) error {
 		return fmt.Errorf("failed to encode PEM (key): %w", err)
 	}
 
-	crtFile, err := os.OpenFile(messCrtFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	crtFile, err := os.OpenFile(messCrtFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
@@ -588,43 +571,6 @@ func parseKeyCert(keyBytes, certBytes []byte) (pk any, cert *x509.Certificate, e
 	cert, err = x509.ParseCertificate(block.Bytes)
 
 	return
-}
-
-/*
-func SignTimestamp(privPem []byte) ([]byte, []byte, error) {
-	block, _ := pem.Decode(privPem)
-	if block == nil {
-		return nil, nil, errors.New("invalid private key PEM")
-	}
-
-	// Ed25519 private key in PKCS8 format
-	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		return nil, nil, fmt.Errorf("parse private key: %w", err)
-	}
-
-	priv, ok := key.(ed25519.PrivateKey)
-	if !ok {
-		return nil, nil, errors.New("not an ed25519 private key")
-	}
-
-	// timestamp 8 bytes big-endian
-	ts := time.Now().Unix()
-	payload := make([]byte, 8)
-	binary.BigEndian.PutUint64(payload, uint64(ts))
-
-	// Ed25519 signs raw message (no hashing)
-	sig := ed25519.Sign(priv, payload)
-
-	return payload, sig, nil
-}
-*/
-
-func signatureHeader(key ed25519.PrivateKey) string {
-	data := make([]byte, 8, 48)
-	binary.BigEndian.PutUint64(data, uint64(time.Now().Unix()))
-	b := append(data, ed25519.Sign(key, data)...)
-	return hex.EncodeToString(b)
 }
 
 /**/
@@ -706,11 +652,4 @@ func (p *pprinter) cover(fn func() error) (errcnt int) {
 		p.ok()
 	}
 	return
-}
-
-func btoi(v bool) int {
-	if v {
-		return 1
-	}
-	return 0
 }

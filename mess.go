@@ -331,6 +331,19 @@ func (nm NodeMap) Filter(fn func(n *Node) bool) NodeList {
 	return nodes
 }
 
+// Get returns a Node by ID or nil if not found.
+func (nm NodeMap) Get(id uint64) *Node {
+	if len(nm) == 0 {
+		return nil
+	}
+	for _, node := range nm {
+		if node.ID == id {
+			return node
+		}
+	}
+	return nil
+}
+
 func (nm NodeMap) Clone() NodeMap {
 	x := make(NodeMap)
 	for k, rec := range nm {

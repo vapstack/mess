@@ -84,6 +84,6 @@ func closeIter(iter *pebble.Iterator) {
 
 func closeBatch(b *pebble.Batch) {
 	if err := b.Close(); err != nil {
-		log.Printf("error closing pebble batch:: %v\n", err)
+		log.Printf("error closing pebble batch: %v\n", err)
 	}
 }

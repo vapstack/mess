@@ -13,15 +13,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/klauspost/compress/gzhttp"
 	"github.com/vapstack/mess"
-	"github.com/vapstack/mess/internal/proc"
+	"github.com/vapstack/mess/internal/manager"
 	"github.com/vapstack/mess/internal/proxy"
+	"github.com/vapstack/mess/internal/tlsutil"
 	"golang.org/x/net/http2"
 )
 
-func (n *node) localHandler(hw http.ResponseWriter, hr *http.Request) {
+func (n *node) serviceHandler(hw http.ResponseWriter, hr *http.Request) {
 
-	w, r := proxy.Wrap(hw, hr) // n.getProxyBase(hw)
+	w, r := proxy.Wrap(hw, hr)
 	defer w.Release()
 	defer n.collectProxyMetrics(w)
 
@@ -29,34 +31,6 @@ func (n *node) localHandler(hw http.ResponseWriter, hr *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-
-	// r := hr.WithContext(proxy.NewContext(hr.Context(), b)) // hr.WithContext(context.WithValue(hr.Context(), ctxProxyBaseKey, b))
-
-	/*if n.dev {
-
-		if b.target.service == mess.ServiceName {
-			if r.Method == http.MethodPost {
-				if strings.Trim(r.URL.Path, "/") == "info" {
-					b.toLocal()
-					n.devInfoHandler(w, r)
-				} else {
-					w.WriteHeader(http.StatusNotFound)
-				}
-				return
-			}
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-
-		if p, ok := n.devmap[b.target.realm+"."+b.target.service]; ok {
-			b.toLocal()
-			p.ServeHTTP(w, r)
-			return
-		}
-
-		w.WriteHeader(http.StatusNotFound)
-		return
-	}*/
 
 	var (
 		tn *mess.Node
@@ -117,12 +91,6 @@ func (n *node) localHandler(hw http.ResponseWriter, hr *http.Request) {
 
 func (n *node) tryRouteToLocal(w *proxy.Wrapper, r *http.Request) bool {
 
-	// if pm := (*n.localServices.Load()).getByRealmAndName(w.Target.Realm, w.Target.Service); pm != nil {
-	// 	if tryLocal(pm, w, r) {
-	// 		return true
-	// 	}
-	// }
-
 	if rr := (*n.localAliases.Load()).getByRealmAndName(w.Target.Realm, w.Target.Service); rr != nil {
 		if len(rr.pms) == 1 {
 			if n.tryRouteToProcess(rr.pms[0], w, r) {
@@ -141,7 +109,7 @@ func (n *node) tryRouteToLocal(w *proxy.Wrapper, r *http.Request) bool {
 	return false
 }
 
-func (n *node) tryRouteToProcess(pm *proc.Manager, w *proxy.Wrapper, r *http.Request) bool {
+func (n *node) tryRouteToProcess(pm *manager.Manager, w *proxy.Wrapper, r *http.Request) bool {
 	if n.id == w.Caller.NodeID {
 		svc := pm.Service()
 		if w.Caller.Realm == svc.Realm && w.Caller.Service == svc.Name {
@@ -198,12 +166,6 @@ func (n *node) nodeHandler(w *proxy.Wrapper, r *http.Request, path []string, fro
 		return
 	}
 	if len(path) != 1 {
-		// if path[0] == "publish" {
-		// 	r.Pattern = path[1]
-		// } else {
-		// 	w.WriteHeader(http.StatusNotFound)
-		// 	return
-		// }
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -217,7 +179,7 @@ func (n *node) nodeHandler(w *proxy.Wrapper, r *http.Request, path []string, fro
 
 func (n *node) setupProxyClient() {
 
-	transport := &http.Transport{
+	transport := gzhttp.Transport(&http.Transport{
 
 		ForceAttemptHTTP2:     true,
 		TLSHandshakeTimeout:   10 * time.Second,
@@ -228,11 +190,11 @@ func (n *node) setupProxyClient() {
 			GetClientCertificate: func(_ *tls.CertificateRequestInfo) (*tls.Certificate, error) {
 				return n.cert.Load(), nil
 			},
-			VerifyPeerCertificate: n.verifyPeerCert,
+			VerifyPeerCertificate: tlsutil.PeerCertVerifier(n.id, n.pool),
 			RootCAs:               n.pool,
 			MinVersion:            tls.VersionTLS13,
 		},
-	}
+	})
 
 	n.proxy = &httputil.ReverseProxy{
 		Rewrite:       proxy.Rewrite,
@@ -252,7 +214,7 @@ func (n *node) setupProxyClient() {
 
 type roundTripper struct {
 	caller string
-	base   *http.Transport
+	base   http.RoundTripper
 	node   *node
 }
 
@@ -267,7 +229,7 @@ type clientMeter struct {
 }
 
 func (rt *roundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
-	// todo: get from pool?
+	// todo: get from pool
 	m := &clientMeter{
 		Start:  time.Now(),
 		Target: r.Header.Get(mess.TargetNodeHeader),
@@ -280,7 +242,7 @@ func (rt *roundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
 
 	response, err := rt.base.RoundTrip(r)
 	if err != nil {
-		return response, err // no request was made
+		return response, err
 	}
 	m.Status = response.StatusCode
 	m.Body = response.Body
@@ -310,55 +272,8 @@ func (m *clientMeter) Close() error {
 }
 
 func (m *clientMeter) release() {
-	// todo: return to pool?
+	// todo: return to pool
 }
-
-/**/
-/*
-func (n *node) setupLocalServer() (stopfn func(), errch chan error, err error) {
-
-	var localListener net.Listener
-
-	if n.dev || runtime.GOOS == "windows" {
-		addr := fmt.Sprintf("127.0.0.1:%v", mess.DevPort)
-		localListener, err = net.Listen("tcp", addr)
-		if err != nil {
-			return nil, nil, fmt.Errorf("listen tcp %v: %w", addr, err)
-		}
-
-		// } else {
-		// 	localListener, err = net.Listen("unix", n.sock)
-		// 	if err != nil {
-		// 		return nil, nil, fmt.Errorf("listen unix %v: %w", n.sock, err)
-		// 	}
-	}
-
-	localServer := &http.Server{
-		Handler:  http.HandlerFunc(n.localHandler),
-		ErrorLog: log.New(io.Discard, "", 0),
-	}
-
-	stopfn = func() {
-		// ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		// defer cancel()
-		log.Println("stopping local server...")
-		if e := localServer.Shutdown(context.Background()); e != nil {
-			n.messlogf("local server shutdown error: %v\n", e)
-			// log.Printf("local server shutdown error: %v\n", e)
-		}
-	}
-
-	errch = make(chan error, 1)
-	go func() {
-		defer close(errch)
-		if e := localServer.Serve(localListener); e != nil && !errors.Is(e, http.ErrServerClosed) {
-			errch <- e
-		}
-	}()
-
-	return
-}
-*/
 
 func (n *node) setupPublicServer() (stopfn func(), errch chan error, err error) {
 
@@ -377,14 +292,14 @@ func (n *node) setupPublicServer() (stopfn func(), errch chan error, err error) 
 			GetCertificate: func(_ *tls.ClientHelloInfo) (*tls.Certificate, error) {
 				return n.cert.Load(), nil
 			},
-			VerifyPeerCertificate: n.verifyPeerCert,
+			VerifyPeerCertificate: tlsutil.PeerCertVerifier(n.id, n.pool),
 			ClientAuth:            tls.RequireAndVerifyClientCert,
 			MinVersion:            tls.VersionTLS13,
 		}
 	}
 
 	publicServer := &http.Server{
-		Handler:           http.HandlerFunc(n.publicHandler), // h2c.NewHandler(http.HandlerFunc(n.publicHandler), nil),
+		Handler:           gzhttp.GzipHandler(http.HandlerFunc(n.publicHandler)), // h2c.NewHandler(http.HandlerFunc(n.publicHandler), nil),
 		TLSConfig:         tlsConfig,
 		ErrorLog:          log.New(io.Discard, "", 0),
 		ReadHeaderTimeout: 4 * time.Second,
@@ -415,198 +330,3 @@ func (n *node) setupPublicServer() (stopfn func(), errch chan error, err error) 
 	}(n.dev)
 	return
 }
-
-//
-// func (pm *procManager) createServiceOutgoingProxy(svc *mess.Service) (string, error) {
-//
-// 	var network, addr string
-// 	var err error
-//
-// 	switch p := strings.ToLower(svc.Proxy); p {
-//
-// 	case "", "tcp":
-// 		network = p
-// 		addr = "127.0.0.1:0"
-//
-// 	case "unix":
-// 		network = p
-// 		addr, err = filepath.Abs(filepath.Join(pm.path, "proxy.sock"))
-// 		if err != nil {
-// 			return "", fmt.Errorf("error getting absolute path for socket: %v", err)
-// 		}
-//
-// 	default:
-// 		network, addr, err = mess.ParseNetworkAddr(svc.Proxy)
-// 		if err != nil {
-// 			return "", fmt.Errorf("error parsing proxy string %v: %w", svc.Proxy, err)
-// 		}
-// 	}
-// 	if network == "unix" {
-// 		if err = os.Remove(addr); err != nil {
-// 			return "", fmt.Errorf("error deleting sock file %v: %w", addr, err)
-// 		}
-// 	}
-//
-// 	l, err := net.Listen(network, addr)
-// 	if err != nil {
-// 		return "", err
-// 	}
-// 	pm.listener = l
-// 	if network == "unix" {
-// 		pm.unixsock = addr
-// 	}
-//
-// 	pm.server = &http.Server{
-// 		Handler: h2c.NewHandler(
-// 			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-// 				r.Header.Set(mess.CallerNodeHeader, strconv.FormatUint(pm.node.id, 10))
-// 				r.Header.Set(mess.CallerRealmHeader, svc.Realm)
-// 				r.Header.Set(mess.CallerServiceHeader, svc.Name)
-// 				pm.node.localHandler(w, r)
-// 			}),
-// 			new(http2.Server),
-// 		),
-// 		ErrorLog: log.New(io.Discard, "", 0),
-// 	}
-//
-// 	go func() {
-// 		if e := pm.server.Serve(pm.listener); e != nil && !errors.Is(e, http.ErrServerClosed) {
-// 			if svc.Realm != "" {
-// 				pm.node.messlogf("%v@%v: http server error: %v\n", svc.Name, svc.Realm, e)
-// 			} else {
-// 				pm.node.messlogf("%v: http server error: %v\n", svc.Name, e)
-// 			}
-// 		}
-// 	}()
-//
-// 	if network == "unix" {
-// 		return addr, nil
-// 	} else {
-// 		return "127.0.0.1:" + strings.Split(addr, ":")[1], nil
-// 	}
-//
-// 	/*
-// 		if pm.node.dev {
-// 			network, addr, err := mess.ParseNetworkAddr(svc.Proxy)
-// 			if err != nil {
-// 				return fmt.Errorf("failed to parse proxy addr: %w", err)
-// 			}
-// 			l, err := net.Listen(network, addr)
-// 			if err != nil {
-// 				return fmt.Errorf("listen %v on %v: %w", network, addr, err)
-// 			}
-// 			if network == "unix" {
-// 				pm.unixListener = l
-// 			} else {
-// 				pm.tcpListener = l
-// 			}
-// 		}
-//
-// 		proxyUnix, err := filepath.Abs(filepath.Join(pm.path, "proxy.sock"))
-// 		if err != nil {
-// 			pm.node.messlogf("error getting absolute path for socket: %v", err)
-// 		} else {
-// 			_ = os.Remove(proxyUnix)
-// 			unixListener, uerr := net.Listen("unix", proxyUnix)
-// 			if uerr != nil {
-// 				return fmt.Errorf("listen unix %v: %w", proxyUnix, uerr)
-// 			}
-// 			pm.unixListener = unixListener
-// 			pm.proxyUnix = proxyUnix
-// 		}
-//
-// 		tcpListener, terr := net.Listen("tcp", "127.0.0.1:0")
-// 		if terr != nil {
-// 			if pm.unixListener != nil {
-// 				_ = pm.unixListener.Close()
-// 				_ = os.Remove(proxyUnix)
-// 			}
-// 			return fmt.Errorf("listen tcp: %w", terr)
-// 		}
-//
-// 		pm.tcpListener = tcpListener
-// 		if addr, ok := tcpListener.Addr().(*net.TCPAddr); ok {
-// 			// proxyPort = addr.Port
-// 			pm.proxyPort = addr.Port // proxyPort
-// 		}
-//
-// 		pm.server = &http.Server{
-// 			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-// 				r.Header.Set(mess.CallerNodeHeader, strconv.FormatUint(pm.node.id, 10))
-// 				r.Header.Set(mess.CallerRealmHeader, svc.Realm)
-// 				r.Header.Set(mess.CallerServiceHeader, svc.Name)
-// 				pm.node.localHandler(w, r)
-// 			}),
-// 			ErrorLog: log.New(io.Discard, "", 0),
-// 		}
-//
-// 		if pm.unixListener != nil {
-// 			go func() {
-// 				if e := pm.server.Serve(pm.unixListener); e != nil && !errors.Is(e, http.ErrServerClosed) {
-// 					if svc.Realm != "" {
-// 						pm.node.messlogf("%v@%v: unix-socket server error: %v\n", svc.Name, svc.Realm, e)
-// 					} else {
-// 						pm.node.messlogf("%v: unix-socket server error: %v\n", svc.Name, e)
-// 					}
-// 				}
-// 			}()
-// 		}
-// 		go func() {
-// 			if e := pm.server.Serve(pm.tcpListener); e != nil && !errors.Is(e, http.ErrServerClosed) {
-// 				if svc.Realm != "" {
-// 					pm.node.messlogf("%v@%v: tcp-socket server error: %v\n", svc.Name, svc.Realm, e)
-// 				} else {
-// 					pm.node.messlogf("%v: tcp-socket server error: %v\n", svc.Name, e)
-// 				}
-// 			}
-// 		}()
-// 		return nil*/
-// }
-
-// func createServiceIncomingProxy(svc *mess.Service, binpath string) (*httputil.ReverseProxy, error) {
-// 	network, addr, err := mess.ParseNetworkAddr(svc.Listen)
-// 	if err != nil {
-// 		return nil, fmt.Errorf("invalid Listen: %w", err)
-// 	}
-//
-// 	transport := &http.Transport{
-// 		ForceAttemptHTTP2:   true,
-// 		MaxIdleConnsPerHost: 1024,
-// 		IdleConnTimeout:     2 * time.Minute,
-// 	}
-//
-// 	switch network {
-// 	case "unix":
-// 		if !filepath.IsAbs(addr) {
-// 			if binpath == "" {
-// 				return nil, fmt.Errorf("dev mode requires absolute path for unix sockets")
-// 			}
-// 			addr = filepath.Join(binpath, addr)
-// 		}
-// 		transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
-// 			return new(net.Dialer).DialContext(ctx, "unix", addr)
-// 		}
-//
-// 	case "tcp":
-// 		host, port, e := net.SplitHostPort(addr)
-// 		if e != nil {
-// 			return nil, fmt.Errorf("invalid Listen: %w", e)
-// 		}
-// 		if host == "" || host == "localhost" {
-// 			host = "127.0.0.1"
-// 		}
-// 		dst := net.JoinHostPort(host, port)
-// 		transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
-// 			return new(net.Dialer).DialContext(ctx, "tcp", dst)
-// 		}
-// 	}
-//
-// 	proxy := &httputil.ReverseProxy{
-// 		Rewrite:       proxyRewrite,
-// 		Transport:     transport,
-// 		FlushInterval: -1,
-// 		BufferPool:    bufpool,
-// 	}
-//
-// 	return proxy, nil
-// }

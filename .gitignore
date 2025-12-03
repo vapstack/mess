@@ -6,6 +6,8 @@ cmd/mess/mess.json
 cmd/mess/node.key
 cmd/mess/node.crt
 cmd/mess/node.json
+cmd/mess/ops.key
+cmd/mess/ops.crt
 
 cmd/node/node
 cmd/node/node.exe

@@ -46,9 +46,6 @@ type (
 		Topic  string       `json:"topic"`
 		Cursor EventCursor  `json:"cursor"`
 		Filter []MetaFilter `json:"filter"`
-
-		// Limit  uint64 `json:"limit"`
-		// Stream bool   `json:"stream"`
 	}
 
 	MetaFilter struct {
@@ -190,7 +187,7 @@ type boltCursor struct {
 }
 
 func newBoltCursor(topic string, start EventCursor, filename string) (*boltCursor, error) {
-	bolt, err := bbolt.Open(filename, 0600, nil)
+	bolt, err := bbolt.Open(filename, 0o600, nil)
 	if err != nil {
 		return nil, fmt.Errorf("initialization error: %w", err)
 	}

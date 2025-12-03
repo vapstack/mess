@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/vapstack/mess"
@@ -18,11 +19,13 @@ const pulseInterval = 13 * time.Second
 func (n *node) pulsing() {
 	defer n.wg.Done()
 	b := new(bytes.Buffer)
+	t := time.NewTicker(pulseInterval)
+	wg := new(sync.WaitGroup)
 	for {
 		select {
 		case <-n.ctx.Done():
 			return
-		case <-time.After(pulseInterval):
+		case <-t.C:
 			b.Reset()
 			d := n.getState()
 			e := gob.NewEncoder(b).Encode(d)
@@ -32,14 +35,18 @@ func (n *node) pulsing() {
 			}
 			for _, rec := range n.state.Load().Map {
 				if rec.ID > n.id || time.Since(time.Unix(rec.LastSync, 0)) > 2*time.Minute {
-					go n.pulse(rec, b.Bytes())
+					wg.Add(1)
+					go n.pulse(rec, b.Bytes(), wg)
 				}
 			}
+			wg.Wait()
 		}
 	}
 }
 
-func (n *node) pulse(rec *mess.Node, data []byte) {
+func (n *node) pulse(rec *mess.Node, data []byte, wg *sync.WaitGroup) {
+	defer wg.Done()
+
 	addr := rec.Address()
 	if addr == "" {
 		return
@@ -56,12 +63,6 @@ func (n *node) pulse(rec *mess.Node, data []byte) {
 		return
 	}
 
-	// req.Header.Set("Content-Type", "application/gob")
-	// req.Header.Set(mess.CallerHeader, internal.ConstructCaller(n.id, "", mess.ServiceName))
-	// req.Header.Set(mess.TargetServiceHeader, mess.ServiceName)
-	// req.Header.Set(mess.CallerServiceHeader, mess.ServiceName)
-	// req.Header.Set(mess.CallerNodeHeader, strconv.FormatUint(n.id, 10))
-
 	req.Header.Set(mess.TargetNodeHeader, strconv.FormatUint(rec.ID, 10))
 
 	res, err := n.client.Do(req)
@@ -70,8 +71,6 @@ func (n *node) pulse(rec *mess.Node, data []byte) {
 		return
 	}
 	defer internal.DrainAndCloseBody(res)
-	// defer func(rsp *http.Response) { _ = rsp.Body.Close() }(res)
-	// defer func(rsp *http.Response) { _, _ = io.Copy(io.Discard, rsp.Body) }(res)
 
 	if res.StatusCode != http.StatusOK {
 		b, err := io.ReadAll(res.Body)
@@ -102,10 +101,9 @@ func (n *node) applyPeerMap(req *mess.NodeState, remoteAddr string) (*mess.NodeS
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	// d := n.getState()
 	d := n.stateClone()
 
-	if req.Node != nil { // && !req.Node.Passive {
+	if req.Node != nil {
 		req.Node.Addr = remoteAddr
 		req.Node.LastSync = time.Now().Unix()
 		d.Map[req.Node.ID] = req.Node

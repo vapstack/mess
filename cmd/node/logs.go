@@ -105,6 +105,9 @@ func (n *node) deleteLog(realm, service string) error {
 	if err := v.(*dbInstance).DB.Close(); err != nil {
 		return fmt.Errorf("db close: %w", err)
 	}
+
+	n.logdb.Delete(key)
+
 	if err := os.RemoveAll(filepath.Join(n.logdir, realm, service)); err != nil {
 		return err
 	}
@@ -113,10 +116,13 @@ func (n *node) deleteLog(realm, service string) error {
 }
 
 func (n *node) writeLogs(realm, service string, msgs ...[]byte) {
+	if len(msgs) == 0 {
+		return
+	}
 
 	db, err := n.getLogDB(realm, service)
 	if err != nil {
-		log.Printf("writing logs of %v: db open: %v\n", internal.ServiceName(service, realm), err)
+		log.Printf("writing logs of %v: database: %v\n", internal.ServiceName(service, realm), err)
 		return
 	}
 
@@ -147,8 +153,10 @@ func (n *node) writeLogs(realm, service string, msgs ...[]byte) {
 
 func (n *node) cleanupLogs(db *dbInstance) {
 	var start, end [8]byte
-	binary.BigEndian.PutUint64(start[:], uint64(time.Now().Add(-logTTL*100).Unix()))
-	binary.BigEndian.PutUint64(end[:], uint64(time.Now().Add(-logTTL).Unix()))
+
+	binary.BigEndian.PutUint64(start[:], uint64(time.Now().Add(-logTTL*100).UnixNano()))
+	binary.BigEndian.PutUint64(end[:], uint64(time.Now().Add(-logTTL).UnixNano()))
+
 	if err := db.DeleteRange(start[:], end[:], pebble.NoSync); err != nil {
 		n.logf("error removing expired logs: %v", err)
 	}

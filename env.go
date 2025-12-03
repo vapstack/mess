@@ -15,11 +15,6 @@ const (
 	EnvService = "MESS_SERVICE"
 	EnvDataDir = "MESS_DATA_DIR"
 	EnvProxy   = "MESS_PROXY"
-
-	// EnvProxyPort = "MESS_PROXY_PORT"
-	// EnvProxyUnix = "MESS_PROXY_UNIX"
-
-	// EnvProxy     = "MESS_PROXY"
 )
 
 type Environment struct {

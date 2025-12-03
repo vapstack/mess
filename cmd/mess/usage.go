@@ -7,7 +7,7 @@ var commandUsage = map[string][]string{
 	},
 	"gen": {
 		"Generate new key and certificate files for a node and store them under the current dir",
-		"$ mess gen <node_id> [<lifetime_days>]",
+		"$ mess gen <node_id|ops> [<lifetime_days>]",
 	},
 
 	"sync": {
@@ -78,7 +78,7 @@ var commandUsage = map[string][]string{
 	},
 
 	// "find": {
-	// 	"Find nodes having a specified service (supports <*suffix> and <prefix*>)",
+	// 	"Print nodes having a service (supports <*suffix> and <prefix*>)",
 	// 	"$ mess find <service[@realm]>",
 	// },
 	// "wipe": {
@@ -87,14 +87,14 @@ var commandUsage = map[string][]string{
 	// },
 	// "logs": {
 	// 	"Show logs from services or nodes",
-	// 	"$ mess logs <service> <ip_addr|node_id> [stream]",
+	// 	"$ mess logs <service[@realm]> <ip_addr|node_id> [stream]",
 	// },
-	// "signals" {
-	// 	"Write signals from the topic to stdout",
-	// 	"$ mess signals <topic> [limit]",
+	// "listen" {
+	// 	"Listen for events emitted to the topic and write them to stdout",
+	// 	"$ mess listen <topic> [limit]",
 	// },
 	// "metrics": {
 	// 	"Show metrics from services or nodes",
-	// 	"$ mess metrics <service> <ip_addr|node_id>",
+	// 	"$ mess metrics <service[@realm]> <ip_addr|node_id>",
 	// },
 }

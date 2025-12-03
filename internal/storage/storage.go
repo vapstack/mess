@@ -1,4 +1,4 @@
-package internal
+package storage
 
 import (
 	"encoding/json"
@@ -42,7 +42,7 @@ func ReadFile(filename string) ([]byte, error) {
 
 func WriteFile(filename string, data []byte) error {
 	tempname := filename + ".temp"
-	if err := os.WriteFile(tempname, data, 0600); err != nil {
+	if err := os.WriteFile(tempname, data, 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tempname, filename)

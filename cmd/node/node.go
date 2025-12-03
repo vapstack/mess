@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"net/http/httputil"
@@ -24,7 +25,8 @@ import (
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/vapstack/mess"
 	"github.com/vapstack/mess/internal"
-	"github.com/vapstack/mess/internal/proc"
+	"github.com/vapstack/mess/internal/manager"
+	"github.com/vapstack/mess/internal/storage"
 
 	"github.com/vapstack/monotime"
 	bolterrors "go.etcd.io/bbolt/errors"
@@ -68,7 +70,6 @@ func main() {
 	/**/
 
 	n := &node{
-		// sock:   binPath + ".sock",
 		path:   binPath,
 		svcdir: filepath.Join(binPath, "svc"),
 		logdir: filepath.Join(binPath, "log"),
@@ -77,19 +78,19 @@ func main() {
 		dev:    dev,
 	}
 
-	if err = os.MkdirAll(n.tmpdir, 0700); err != nil {
+	if err = os.MkdirAll(n.tmpdir, 0o700); err != nil {
 		log.Println("fatal:", err)
 		return
 	}
-	if err = os.MkdirAll(n.logdir, 0700); err != nil {
+	if err = os.MkdirAll(n.logdir, 0o700); err != nil {
 		log.Println("fatal:", err)
 		return
 	}
-	if err = os.MkdirAll(n.svcdir, 0700); err != nil {
+	if err = os.MkdirAll(n.svcdir, 0o700); err != nil {
 		log.Println("fatal:", err)
 		return
 	}
-	if err = os.MkdirAll(n.busdir, 0700); err != nil {
+	if err = os.MkdirAll(n.busdir, 0o700); err != nil {
 		log.Println("fatal:", err)
 		return
 	}
@@ -102,11 +103,11 @@ func main() {
 		}
 
 	} else {
-		if err = n.loadCert(); err != nil {
+		if err = n.loadState(); err != nil {
 			log.Println("fatal:", err)
 			return
 		}
-		if err = n.loadState(); err != nil {
+		if err = n.loadCert(); err != nil {
 			log.Println("fatal:", err)
 			return
 		}
@@ -138,15 +139,12 @@ func main() {
 
 	/**/
 
-	var publicServerErr chan error
-
-	var publicStop func()
-	publicStop, publicServerErr, err = n.setupPublicServer()
+	srvStop, srvErrCh, err := n.setupPublicServer()
 	if err != nil {
 		log.Println("fatal:", err)
 		return
 	}
-	defer publicStop()
+	defer srvStop()
 
 	/**/
 
@@ -170,7 +168,7 @@ func main() {
 	case <-n.ctx.Done():
 		log.Println(mess.ErrInterrupt)
 
-	case e := <-publicServerErr:
+	case e := <-srvErrCh:
 		if e != nil {
 			log.Println("fatal: public server error:", e)
 		}
@@ -222,13 +220,13 @@ type node struct {
 
 /**/
 
-type lsMap map[string]map[string]*proc.Manager
+type lsMap map[string]map[string]*manager.Manager
 
-func (m lsMap) get(s *mess.Service) *proc.Manager {
+func (m lsMap) get(s *mess.Service) *manager.Manager {
 	return m.getByRealmAndName(s.Realm, s.Name)
 }
 
-func (m lsMap) getByRealmAndName(realm, name string) *proc.Manager {
+func (m lsMap) getByRealmAndName(realm, name string) *manager.Manager {
 	if sm, ok := m[realm]; ok {
 		if pm, ok := sm[name]; ok {
 			return pm
@@ -237,10 +235,10 @@ func (m lsMap) getByRealmAndName(realm, name string) *proc.Manager {
 	return nil
 }
 
-func (m lsMap) set(s *mess.Service, pm *proc.Manager) {
+func (m lsMap) set(s *mess.Service, pm *manager.Manager) {
 	sm, ok := m[s.Realm]
 	if !ok {
-		sm = make(map[string]*proc.Manager)
+		sm = make(map[string]*manager.Manager)
 		m[s.Realm] = sm
 	}
 	sm[s.Name] = pm
@@ -255,7 +253,7 @@ func (m lsMap) delete(s *mess.Service) {
 func (m lsMap) clone() lsMap {
 	x := make(lsMap)
 	for k, v := range m {
-		sm := make(map[string]*proc.Manager)
+		sm := make(map[string]*manager.Manager)
 		for key, val := range v {
 			sm[key] = val
 		}
@@ -283,7 +281,6 @@ func (m rsMap) add(realm, service string, node *mess.Node) {
 		sm = make(map[string][]*mess.Node)
 		m[realm] = sm
 	}
-	// sm[service] = append(sm[service], node)
 
 	nodes, ok := sm[service]
 	if !ok {
@@ -302,7 +299,7 @@ func (m rsMap) add(realm, service string, node *mess.Node) {
 
 type aliasRoundRobin struct {
 	next atomic.Uint64
-	pms  []*proc.Manager
+	pms  []*manager.Manager
 }
 
 type lsAliasMap map[string]map[string]*aliasRoundRobin
@@ -341,7 +338,8 @@ func (n *node) runServices() {
 
 	n.localServices.Store(&lsMap{})
 
-	services := append(make(mess.Services, 0), n.state.Load().Node.Services...)
+	services := slices.Clone(n.state.Load().Node.Services)
+
 	slices.SortStableFunc(services, func(a, b *mess.Service) int {
 		if a.Order > b.Order {
 			return 1
@@ -349,118 +347,65 @@ func (n *node) runServices() {
 			return -1
 		}
 		return 0
-		// return strings.Compare(a.Name, b.Name)
 	})
 
-	// rm := make(lsMap)
+	done := n.ctx.Done()
 
 	for _, s := range services {
 		select {
-		case <-n.ctx.Done():
+		case <-done:
 			continue
 		default:
 		}
-		// if rm.get(s) != nil {
-		// 	n.messlogf("duplicate service declaration: %v", s.Name)
-		// 	continue
-		// }
 
-		if err := n.runService(s); err != nil {
+		if err := n.initManager(s); err != nil {
 			n.logf("failed to initialize process manager for %v: %v", internal.ServiceName(s.Name, s.Realm), err)
 			continue
 		}
-		// pm, err := proc.NewManager(n.dev, n.svcdir, s) // newPM(n, s)
-		// if err != nil {
-		// 	n.messlogf("failed to initialize process manager for %v: %v", s.Name, err)
-		// 	continue
-		// }
-		// rm.set(s, pm)
 	}
-
-	// n.updateLocalServices(rm)
-	// n.localServices.Store(&rm)
 }
 
-func (n *node) runService(s *mess.Service) error {
+func (n *node) initManager(s *mess.Service) error {
 
 	log.Printf("starting process manager for %v...\n", internal.ServiceName(s.Name, s.Realm))
 
 	rm := *n.localServices.Load()
 	if rm.get(s) != nil {
-		return fmt.Errorf("service %v is already running", internal.ServiceName(s.Name, s.Realm))
+		return fmt.Errorf("service manager for %v is already running", internal.ServiceName(s.Name, s.Realm))
+	}
+
+	m := &manager.Manager{
+		Dev:     n.dev,
+		NodeID:  n.id,
+		RootDir: n.svcdir,
+		Handler: n.serviceHandler,
+		ProcLog: n.writeLogs,
+		NodeLog: n.logf,
+	}
+
+	if err := m.Manage(s); err != nil {
+		return err
 	}
 
 	xm := rm.clone()
-	pm, err := proc.NewManager(n.dev, n.id, n.svcdir, n.localHandler, s)
-	if err != nil {
-		return err
-	}
-	xm.set(s, pm)
-
-	n.startLogWriters(pm)
+	xm.set(s, m)
 
 	n.updateLocalServices(xm)
+
 	return nil
-}
-
-func (n *node) startLogWriters(pm *proc.Manager) {
-
-	go func() {
-		logs := make([][]byte, 0, 256)
-		svc := pm.Service()
-		ch := pm.BinLogs()
-
-		tick := time.NewTicker(time.Second)
-		defer tick.Stop()
-
-		for {
-			select {
-			case l, ok := <-ch:
-				if !ok {
-					if len(logs) > 0 {
-						n.writeLogs(svc.Realm, svc.Name, logs...)
-					}
-					return
-				}
-				logs = append(logs, l)
-			DRAIN:
-				for len(logs) < 1000 {
-					select {
-					case l, ok = <-ch:
-						if !ok {
-							break DRAIN
-						}
-						logs = append(logs, l)
-					default:
-						break DRAIN
-					}
-				}
-				n.writeLogs(svc.Realm, svc.Name, logs...)
-				logs = logs[:0]
-
-			case <-tick.C:
-			}
-		}
-	}()
-
-	go func() {
-		for e := range pm.ManagerLogs() {
-			n.logErr(e)
-		}
-	}()
 }
 
 func (n *node) stopServices() {
 
-	pms := make([]*proc.Manager, 0)
+	pms := make([]*manager.Manager, 0)
 	for _, sm := range *n.localServices.Load() {
 		for _, pm := range sm {
 			pms = append(pms, pm)
 		}
 	}
 
-	slices.SortFunc(pms, func(a, b *proc.Manager) int {
-		aOrder, bOrder := a.CurrentOrder(), b.CurrentOrder()
+	slices.SortFunc(pms, func(a, b *manager.Manager) int {
+		aOrder, bOrder := a.Order(), b.Order()
 		if aOrder > bOrder {
 			return -1
 		} else if aOrder < bOrder {
@@ -470,16 +415,11 @@ func (n *node) stopServices() {
 	})
 
 	for _, pm := range pms {
-		wasRunning := !pm.Running()
 
 		s := pm.Service()
 		log.Printf("closing process manager for %v...\n", internal.ServiceName(s.Name, s.Realm))
 
-		if err := pm.Shutdown(); err != nil {
-			if wasRunning {
-				n.logf("shutting down %v: %v", internal.ServiceName(s.Name, s.Realm), err)
-			}
-		}
+		pm.Stop()
 	}
 }
 
@@ -573,7 +513,9 @@ func (n *node) getState() *mess.NodeState {
 
 	sm := *n.localServices.Load()
 
-	state.Node.CertExpires = n.cert.Load().Leaf.NotAfter.Unix()
+	if !n.dev {
+		state.Node.CertExpires = n.cert.Load().Leaf.NotAfter.Unix()
+	}
 
 	for _, s := range state.Node.Services {
 		if pm := sm.get(s); pm != nil {
@@ -581,10 +523,6 @@ func (n *node) getState() *mess.NodeState {
 			s.Passive = pm.Passive()
 		}
 	}
-
-	// n.busTopics.each(func(realm, topic string, t int64) bool {
-	//
-	// })
 
 	return state
 }
@@ -599,7 +537,6 @@ func (n *node) close() error {
 		k := key.(dbKey)
 		if err := db.(*dbInstance).Close(); err != nil {
 			n.logf("error closing bus db for topic %v: %v", internal.ServiceName(k.name, k.realm), err)
-			// log.Printf("error closing bus db for topic %v@%v: %v", k.name, k.realm, e)
 		}
 		return true
 	})
@@ -611,7 +548,7 @@ func (n *node) close() error {
 		n.logdb.Range(func(key, db any) bool {
 			k := key.(dbKey)
 			if e := db.(*dbInstance).Close(); e != nil {
-				log.Printf("error closing log db for %v: %v", internal.ServiceName(k.name, k.realm), e)
+				log.Printf("error closing logs db for %v: %v", internal.ServiceName(k.name, k.realm), e)
 			}
 			return true
 		})
@@ -620,8 +557,7 @@ func (n *node) close() error {
 	return nil
 }
 
-func (n *node) updateService(s *mess.Service) error {
-	// lock acquired in handler
+func (n *node) apiUpdateService(s *mess.Service) error {
 	d := n.stateClone()
 	for i, rec := range d.Node.Services {
 		if rec.Name == s.Name {
@@ -632,8 +568,7 @@ func (n *node) updateService(s *mess.Service) error {
 	return n.saveState(d)
 }
 
-func (n *node) deleteService(s *mess.Service) error {
-	// lock acquired in handler
+func (n *node) apiDeleteService(s *mess.Service) error {
 	d := n.stateClone()
 	x := make(mess.Services, 0, len(d.Node.Services))
 	for _, rec := range d.Node.Services {
@@ -646,15 +581,16 @@ func (n *node) deleteService(s *mess.Service) error {
 	d.Node.Services = x
 
 	if err := n.saveState(d); err != nil {
-		return err
+		return fmt.Errorf("error persisting node state: %v", err)
 	}
 
 	rm := (*n.localServices.Load()).clone()
 	rm.delete(s)
+
 	n.updateLocalServices(rm)
 
 	if err := n.deleteLog(s.Realm, s.Name); err != nil {
-		n.logf("error deleting log db for %v: %v", internal.ServiceName(s.Name, s.Realm), err)
+		return fmt.Errorf("error deleting logs db for %v: %v", internal.ServiceName(s.Name, s.Realm), err)
 	}
 
 	return nil
@@ -665,7 +601,7 @@ func (n *node) stateClone() *mess.NodeState {
 }
 
 func (n *node) saveState(d *mess.NodeState) error {
-	if err := internal.WriteObject("node.json", d); err != nil {
+	if err := storage.WriteObject("node.json", d); err != nil {
 		return err
 	}
 	n.state.Store(d)
@@ -673,7 +609,7 @@ func (n *node) saveState(d *mess.NodeState) error {
 }
 
 func (n *node) loadDevState() error {
-	services, err := internal.LoadObject[mess.Services]("node.dev.json")
+	services, err := storage.LoadObject[mess.Services]("node.dev.json")
 	if err != nil {
 		return fmt.Errorf("reading node.json: %w", err)
 	}
@@ -685,7 +621,7 @@ func (n *node) loadDevState() error {
 			Datacenter: "dev",
 			Services:   *services,
 		},
-		Map: nil,
+		Map: make(mess.NodeMap),
 	}
 	n.id = state.Node.ID
 	n.state.Store(state)
@@ -693,7 +629,7 @@ func (n *node) loadDevState() error {
 }
 
 func (n *node) loadState() error {
-	state, err := internal.LoadObject[mess.NodeState]("node.json")
+	state, err := storage.LoadObject[mess.NodeState]("node.json")
 	if err != nil {
 		return fmt.Errorf("reading node.json: %w", err)
 	}
@@ -711,8 +647,7 @@ func (n *node) updateLocalServices(m lsMap) {
 }
 
 func (n *node) rebuildAliasMap() {
-	// will acquire lock when it becomes available
-	go n.rebuildAliasMapLocked()
+	go n.rebuildAliasMapLocked() // will acquire lock when it becomes available
 }
 
 func (n *node) rebuildAliasMapLocked() {
@@ -727,7 +662,7 @@ func (n *node) rebuildAliasMapLocked() {
 	am := make(lsAliasMap)
 	for realm, services := range *mptr {
 		for _, pm := range services {
-			if !pm.Running() || pm.Stopped() {
+			if !pm.Running() || pm.StoppedManually() {
 				continue
 			}
 			svc := pm.Service()
@@ -790,9 +725,10 @@ type (
 func closeFile(f *os.File) {
 	n := f.Name()
 	if err := f.Close(); err != nil {
-		s := err.Error()
-		if !strings.Contains(s, "file already closed") {
-			log.Printf("error closing %v: %v\n", n, err)
+		if !errors.Is(err, fs.ErrClosed) {
+			if !strings.Contains(err.Error(), "file already closed") {
+				log.Printf("error closing %v: %v\n", n, err)
+			}
 		}
 	}
 }

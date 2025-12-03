@@ -129,7 +129,7 @@ func (a API) Subscribe(ctx context.Context, req SubscribeRequest, handler func(*
 			_ = res.Body.Close()
 
 			if len(b) == 0 {
-				log.Printf("mess: Subscribe: status error: %v (no body)\n", res.StatusCode)
+				log.Printf("mess: Subscribe: status error: %v - %v\n", res.StatusCode, http.StatusText(res.StatusCode))
 			} else {
 				log.Printf("mess: Subscribe: status error: %v, body: %v\n", res.StatusCode, string(b))
 			}
@@ -292,7 +292,7 @@ func (a API) send(ctx context.Context, endpoint string, request, response any) e
 	if res.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<10))
 		if len(b) == 0 {
-			return fmt.Errorf("status error: %v (no body)", res.StatusCode)
+			return fmt.Errorf("status error: %v - %v", res.StatusCode, http.StatusText(res.StatusCode))
 		}
 		return fmt.Errorf("status error: %v, body: %v", res.StatusCode, string(b))
 	}
