@@ -43,18 +43,19 @@ func main() {
 	}
 	binPath := filepath.Dir(binName)
 
-	if _, err = os.Stat(filepath.Join(binPath, "mess.key")); err == nil {
-		log.Println("fatal: cannot start under the mess root")
-		return
-	}
-
 	dev := isDev()
 
-	if !dev && runtime.GOOS != "linux" {
-		log.Println("fatal: only linux is supported outside of dev mode")
-		return
-	}
 	if !dev {
+		if runtime.GOOS != "linux" {
+			log.Println("fatal: only linux is supported outside of dev mode")
+			return
+		}
+
+		if _, err = os.Stat(filepath.Join(binPath, "mess.key")); err == nil {
+			log.Println("fatal: cannot start under the mess root")
+			return
+		}
+
 		log.SetFlags(0)
 	}
 
