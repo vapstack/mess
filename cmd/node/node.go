@@ -27,6 +27,7 @@ import (
 	"github.com/vapstack/mess/internal"
 	"github.com/vapstack/mess/internal/manager"
 	"github.com/vapstack/mess/internal/storage"
+	"go.etcd.io/bbolt"
 
 	"github.com/vapstack/monotime"
 	bolterrors "go.etcd.io/bbolt/errors"
@@ -206,6 +207,9 @@ type node struct {
 
 	logmu sync.Mutex
 	logdb sync.Map
+
+	seqmu sync.Mutex
+	seqdb atomic.Pointer[bbolt.DB]
 
 	busmu  sync.Mutex
 	busdb  sync.Map
@@ -553,6 +557,12 @@ func (n *node) close() error {
 			}
 			return true
 		})
+	}
+
+	if bolt := n.seqdb.Load(); bolt != nil {
+		if err := bolt.Close(); err != nil {
+			log.Printf("error closing sequence db: %v", err)
+		}
 	}
 
 	return nil

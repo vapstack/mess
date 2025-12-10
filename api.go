@@ -15,24 +15,48 @@ import (
 	"github.com/vapstack/mess/internal"
 )
 
-// State is helper for API.State
-func State(ctx context.Context) (*NodeState, error) { return api.State(ctx) }
+// State is a helper for API.State
+func State(ctx context.Context) (*NodeState, error) { return DefaultAPI.State(ctx) }
 
-// Publish is helper for API.Publish
-func Publish(ctx context.Context, req PublishRequest) error { return api.Publish(ctx, req) }
+// NextSequence is a helper for API.NextSequence
+func NextSequence(ctx context.Context) (uint64, error) { return DefaultAPI.NextSequence(ctx) }
 
-// Emit is helper for API.Emit
-func Emit(ctx context.Context, req EmitRequest) error { return api.Emit(ctx, req) }
+// NextNamedSequence is a helper for API.NextNamedSequence
+func NextNamedSequence(ctx context.Context, name string) (uint64, error) {
+	return DefaultAPI.NextNamedSequence(ctx, name)
+}
+
+// Publish is a helper for API.Publish
+func Publish(ctx context.Context, req PublishRequest) error { return DefaultAPI.Publish(ctx, req) }
+
+// Emit is a helper for API.Emit
+func Emit(ctx context.Context, req EmitRequest) error { return DefaultAPI.Emit(ctx, req) }
 
 // API provides methods to interact with mess node.
 type API struct{ *http.Client }
 
-var api = API{Client: NewClient()}
+var DefaultAPI = API{Client: NewClient()}
 
 // State returns a state of the current node along with a map of the cluster.
 func (a API) State(ctx context.Context) (*NodeState, error) {
 	nd := new(NodeState)
 	return nd, a.send(ctx, "/state", nil, nd)
+}
+
+// NextSequence returns the next sequential ID,
+// which is globally unique across all nodes in the cluster.
+// It consists of a 16-bit node ID and a 48-bit counter.
+func (a API) NextSequence(ctx context.Context) (uint64, error) {
+	var seq uint64
+	return seq, a.send(ctx, "/seq", nil, &seq)
+}
+
+// NextNamedSequence returns the next sequential identifier associated with the specified name,
+// which is globally unique across all cluster nodes.
+// It consists of a 16-bit node ID and a 48-bit counter.
+func (a API) NextNamedSequence(ctx context.Context, name string) (uint64, error) {
+	var seq uint64
+	return seq, a.send(ctx, "/seq?name="+name, nil, &seq)
 }
 
 // Publish publishes the provided events on the specified topic.

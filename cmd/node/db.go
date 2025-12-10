@@ -1,9 +1,13 @@
 package main
 
 import (
+	"fmt"
 	"log"
+	"path/filepath"
+	"unsafe"
 
 	"github.com/cockroachdb/pebble/v2"
+	"go.etcd.io/bbolt"
 
 	"github.com/shirou/gopsutil/v4/mem"
 )
@@ -86,4 +90,58 @@ func closeBatch(b *pebble.Batch) {
 	if err := b.Close(); err != nil {
 		log.Printf("error closing pebble batch: %v\n", err)
 	}
+}
+
+func (n *node) getSeq(realm, name string) (seq uint64, err error) {
+
+	bolt := n.seqdb.Load()
+
+	if bolt == nil {
+
+		n.logmu.Lock()
+		defer n.logmu.Unlock()
+
+		if bolt = n.seqdb.Load(); bolt == nil {
+			bolt, err = bbolt.Open(filepath.Join(n.path, "seq"), 0o600, nil)
+			if err != nil {
+				return 0, fmt.Errorf("error opening db: %w", err)
+			}
+		}
+	}
+
+	tx, err := bolt.Begin(true)
+	if err != nil {
+		return 0, fmt.Errorf("tx error: %w", err)
+	}
+	defer rollback(tx)
+
+	bucketName := unsafe.Slice(unsafe.StringData(realm), len(realm))
+
+	realmBucket, err := tx.CreateBucketIfNotExists(bucketName)
+	if err != nil {
+		return 0, fmt.Errorf("bucket error (realm): %w", err)
+	}
+
+	bucketName = unsafe.Slice(unsafe.StringData(name), len(name))
+
+	targetBucket, err := realmBucket.CreateBucketIfNotExists(bucketName)
+	if err != nil {
+		return 0, fmt.Errorf("bucket error (name): %w", err)
+	}
+
+	seq, err = targetBucket.NextSequence()
+	if err != nil {
+		return 0, fmt.Errorf("error acquiring next sequence: %w", err)
+	}
+
+	return nodeSeq(n.id, seq), tx.Commit()
+}
+
+const nodeBits = 16
+
+func nodeSeq(nodeID uint64, counter uint64) uint64 {
+	nodeMask := (uint64(1) << nodeBits) - 1
+	counterBits := 64 - nodeBits
+	counterMask := (uint64(1) << counterBits) - 1
+	return ((nodeID & nodeMask) << counterBits) | (counter & counterMask)
 }
