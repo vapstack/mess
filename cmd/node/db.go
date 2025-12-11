@@ -115,11 +115,19 @@ func (n *node) getSeq(realm, name string) (seq uint64, err error) {
 	}
 	defer rollback(tx)
 
+	if realm == "" {
+		realm = "default"
+	}
+
 	bucketName := unsafe.Slice(unsafe.StringData(realm), len(realm))
 
 	realmBucket, err := tx.CreateBucketIfNotExists(bucketName)
 	if err != nil {
 		return 0, fmt.Errorf("bucket error (realm): %w", err)
+	}
+
+	if name == "" {
+		name = "default"
 	}
 
 	bucketName = unsafe.Slice(unsafe.StringData(name), len(name))

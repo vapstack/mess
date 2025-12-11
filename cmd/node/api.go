@@ -163,11 +163,7 @@ func init() {
 			local:  true,
 			public: true,
 			fn: func(n *node, w *proxy.Wrapper, r *http.Request) {
-				name := "default"
-				if v := r.URL.Query().Get("name"); v != "" {
-					name = v
-				}
-				sCheck(send(w, r, sMust(n.getSeq(w.Caller.Realm, name))))
+				sCheck(send(w, r, sMust(n.getSeq(w.Caller.Realm, r.URL.Query().Get("name")))))
 			},
 		},
 
