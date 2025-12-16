@@ -86,7 +86,6 @@ func (n *node) serviceHandler(hw http.ResponseWriter, hr *http.Request) {
 	}
 
 	n.proxy.ServeHTTP(w, r)
-	return
 }
 
 func (n *node) tryRouteToLocal(w *proxy.Wrapper, r *http.Request) bool {

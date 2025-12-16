@@ -102,7 +102,7 @@ func (n *node) deleteLog(realm, service string) error {
 		realm = "default"
 	}
 
-	if err := v.(*dbInstance).DB.Close(); err != nil {
+	if err := v.(*dbInstance).Close(); err != nil {
 		return fmt.Errorf("db close: %w", err)
 	}
 

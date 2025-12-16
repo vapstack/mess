@@ -592,7 +592,7 @@ type pprinter struct {
 
 func nodeProgress(rec *mess.Node) *pprinter {
 	pp := new(pprinter)
-	pp.startf(fmt.Sprintf("%v - %v - %v", rec.ID, rec.Location(), rec.Address()))
+	pp.startf("%v - %v - %v", rec.ID, rec.Location(), rec.Address())
 	return pp
 }
 

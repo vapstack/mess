@@ -215,7 +215,7 @@ func (cli *CLI) cmdRotate(cmd *command) (int, error) {
 	ec := cli.eachNodeProgress(func(rec *mess.Node) error {
 
 		if !force {
-			remainDays := float64(time.Unix(rec.CertExpires, 0).Sub(time.Now()) / (24 * time.Hour))
+			remainDays := time.Until(time.Unix(rec.CertExpires, 0)).Hours() / 24
 			if remainDays > float64(days)*0.8 {
 				return errSkip
 			}

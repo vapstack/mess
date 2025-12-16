@@ -33,7 +33,9 @@ func Publish(ctx context.Context, req PublishRequest) error { return DefaultAPI.
 func Emit(ctx context.Context, req EmitRequest) error { return DefaultAPI.Emit(ctx, req) }
 
 // API provides methods to interact with mess node.
-type API struct{ *http.Client }
+type API struct {
+	Client *http.Client
+}
 
 var DefaultAPI = API{Client: NewClient()}
 

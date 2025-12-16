@@ -143,7 +143,6 @@ func (p *Proc) writeLogs() {
 			if !ok {
 				if len(logs) > 0 {
 					p.BinLog(logs...)
-					logs = logs[:0]
 				}
 				return
 			}

@@ -714,12 +714,6 @@ func rMust[T any](v T, err error) T {
 	}
 	return v
 }
-func rMust2[T1, T2 any](v1 T1, v2 T2, err error) (T1, T2) {
-	if err != nil {
-		panic(handlerError{err, nil})
-	}
-	return v1, v2
-}
 func rCheck(err error) {
 	if err != nil {
 		panic(handlerError{err, nil})
