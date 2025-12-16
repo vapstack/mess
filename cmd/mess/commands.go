@@ -449,8 +449,8 @@ func (cli *CLI) cmdUpgrade(cmd *command) (int, error) {
 		return 1, fmt.Errorf("this operation requires a root mess key")
 	}
 
-	node := cmd.args[0]
-	file := cmd.args[1]
+	file := cmd.args[0]
+	node := cmd.args[1]
 
 	now := len(cmd.args) == 3 && cmd.args[2] == "now"
 
