@@ -98,8 +98,8 @@ func (n *node) getSeq(realm, name string) (seq uint64, err error) {
 
 	if bolt == nil {
 
-		n.logmu.Lock()
-		defer n.logmu.Unlock()
+		n.seqmu.Lock()
+		defer n.seqmu.Unlock()
 
 		if bolt = n.seqdb.Load(); bolt == nil {
 			bolt, err = bbolt.Open(filepath.Join(n.path, "seq"), 0o600, nil)
