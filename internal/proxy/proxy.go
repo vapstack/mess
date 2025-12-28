@@ -73,15 +73,23 @@ func ServiceToNode(svc *mess.Service, nodeID uint64, dir string, handler http.Ha
 
 	case "unix":
 		network = p
-		addr, err = filepath.Abs(filepath.Join(dir, "proxy.sock"))
+		addr, err = filepath.Abs(filepath.Join(dir, "mess.proxy.sock"))
 		if err != nil {
-			return nil, fmt.Errorf("error getting absolute path for socket: %v", err)
+			return nil, fmt.Errorf("error getting absolute path for proxy unix-socket: %v", err)
 		}
 
 	default:
 		network, addr, err = internal.ParseNetworkAddr(svc.Proxy)
 		if err != nil {
 			return nil, fmt.Errorf("error parsing proxy string %v: %w", svc.Proxy, err)
+		}
+		if network == "unix" {
+			if !filepath.IsAbs(addr) {
+				addr, err = filepath.Abs(filepath.Join(dir, addr))
+				if err != nil {
+					return nil, fmt.Errorf("error getting absolute path for proxy unix-socket (%v): %v", svc.Proxy, err)
+				}
+			}
 		}
 	}
 
@@ -137,7 +145,7 @@ func ServiceToNode(svc *mess.Service, nodeID uint64, dir string, handler http.Ha
 	return p, nil
 }
 
-func NodeToService(svc *mess.Service) (*Proxy, error) {
+func NodeToService(svc *mess.Service, dir string) (*Proxy, error) {
 
 	network, addr, err := internal.ParseNetworkAddr(svc.Listen)
 	if err != nil {
@@ -153,7 +161,10 @@ func NodeToService(svc *mess.Service) (*Proxy, error) {
 	switch network {
 	case "unix":
 		if !filepath.IsAbs(addr) {
-			addr = filepath.Join(filepath.Dir(svc.Start), addr)
+			addr, err = filepath.Abs(filepath.Join(dir, addr))
+			if err != nil {
+				return nil, fmt.Errorf("error getting absolute path for proxy unix-socket (%v): %v", svc.Listen, err)
+			}
 		}
 		transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return new(net.Dialer).DialContext(ctx, "unix", addr)

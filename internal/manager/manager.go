@@ -156,14 +156,16 @@ func (m *Manager) Start() error {
 	svc := m.updated.Load()
 	m.current.Store(svc)
 
+	exeDir := filepath.Join(m.svcdir, m.meta.Version)
+
 	/**/
 
-	s2n, err := proxy.ServiceToNode(svc, m.NodeID, m.svcdir, m.Handler)
+	s2n, err := proxy.ServiceToNode(svc, m.NodeID, exeDir, m.Handler)
 	if err != nil {
 		return fmt.Errorf("failed to create S2N proxy: %w", err)
 	}
 
-	n2s, err := proxy.NodeToService(svc)
+	n2s, err := proxy.NodeToService(svc, exeDir)
 	if err != nil {
 		if e := s2n.Close(); e != nil {
 			m.logf("error closing S2N proxy: %v", e)
@@ -180,10 +182,10 @@ func (m *Manager) Start() error {
 			if filepath.IsAbs(svc.Start) {
 				exe = svc.Start
 			} else {
-				exe = filepath.Join(m.svcdir, m.meta.Version, svc.Start)
+				exe = filepath.Join(exeDir, svc.Start)
 			}
 		} else {
-			exe = filepath.Join(m.svcdir, m.meta.Version, svc.Name)
+			exe = filepath.Join(exeDir, svc.Name)
 		}
 
 		p := &proc.Proc{
