@@ -18,7 +18,7 @@ type (
 
 		// ID is the unique event identifier in UUID v7 format. Set by the node.
 		// It contains the event time and the ID of the node that published the event.
-		// This ID is guaranteed to be unique among IDs published by the node whose ID is stored in the UUID.
+		// This ID is guaranteed to be unique within the cluster.
 		ID monotime.UUID `json:"id"`
 
 		// Topic on which the event was published. Required.

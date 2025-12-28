@@ -16,23 +16,28 @@ import (
 )
 
 // State is a helper for API.State
-func State(ctx context.Context) (*NodeState, error) { return DefaultAPI.State(ctx) }
-
+// func State(ctx context.Context) (*NodeState, error) { return DefaultAPI.State(ctx) }
+//
 // NextSequence is a helper for API.NextSequence
-func NextSequence(ctx context.Context) (uint64, error) { return DefaultAPI.NextSequence(ctx) }
-
+// func NextSequence(ctx context.Context) (uint64, error) { return DefaultAPI.NextSequence(ctx) }
+//
 // NextNamedSequence is a helper for API.NextNamedSequence
-func NextNamedSequence(ctx context.Context, name string) (uint64, error) {
-	return DefaultAPI.NextNamedSequence(ctx, name)
-}
-
+// func NextNamedSequence(ctx context.Context, name string) (uint64, error) {
+// 	return DefaultAPI.NextNamedSequence(ctx, name)
+// }
+//
 // Publish is a helper for API.Publish
-func Publish(ctx context.Context, req PublishRequest) error { return DefaultAPI.Publish(ctx, req) }
-
+// func Publish(ctx context.Context, req PublishRequest) error { return DefaultAPI.Publish(ctx, req) }
+//
 // Emit is a helper for API.Emit
-func Emit(ctx context.Context, req EmitRequest) error { return DefaultAPI.Emit(ctx, req) }
+// func Emit(ctx context.Context, req EmitRequest) error { return DefaultAPI.Emit(ctx, req) }
+//
+// CreateSubscription is an alias for API.CreateSubscription
+// func CreateSubscription(filename string, topic string, cursor EventCursor) (*Subscription, error) {
+// 	return DefaultAPI.CreateSubscription(filename, topic, cursor)
+// }
 
-// API provides methods to interact with mess node.
+// API provides methods to interact with the mess.
 type API struct {
 	Client *http.Client
 }
@@ -86,6 +91,7 @@ func (a API) Publish(ctx context.Context, req PublishRequest) error {
 //
 // The handler is called for each event. If the handler returns false or a non-nil error,
 // processing stops and the error is returned.
+// The event is not considered handled and will be retried later.
 //
 // Subscribe transparently reconnects with exponential backoff if needed.
 // Connection errors do not stop processing; they are logged using the standard log package.
@@ -219,8 +225,6 @@ func (a API) Subscribe(ctx context.Context, req SubscribeRequest, handler func(*
 	}
 }
 
-var ErrSubscriptionNotExists = errors.New("subscription does not exist")
-
 // OpenSubscription opens a previously created persistent Subscription.
 // Subscription automatically manages cursor persistence and resumes processing from where it left off.
 //
@@ -229,7 +233,7 @@ func (a API) OpenSubscription(topic string, filename string) (*Subscription, err
 
 	if _, err := os.Stat(filename); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, ErrSubscriptionExists
+			return nil, ErrSubscriptionNotExist
 		}
 		return nil, fmt.Errorf("file stat error: %w", err)
 	}
@@ -247,7 +251,10 @@ func (a API) OpenSubscription(topic string, filename string) (*Subscription, err
 	return s, nil
 }
 
-var ErrSubscriptionExists = errors.New("subscription already exists")
+var (
+	ErrSubscriptionExists   = errors.New("subscription already exists")
+	ErrSubscriptionNotExist = errors.New("subscription does not exist")
+)
 
 // CreateSubscription creates a persistent Subscription to the provided topic.
 // Subscription automatically manages cursor persistence and resumes processing from where it left off.
