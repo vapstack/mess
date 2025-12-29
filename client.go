@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/vapstack/mess/internal"
 	"golang.org/x/net/http2"
 )
 
@@ -82,11 +81,6 @@ func NewCustomTransport(node uint64, realm string, service string) RoundTripper 
 }
 
 func (r RoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
-	// if env.Service != "" {
-	// 	request.Header.Set(CallerServiceHeader, env.Service)
-	// }
-
-	request.Header.Set(CallerHeader, internal.ConstructCaller(env.NodeID, env.Realm, env.Service))
 
 	if r.Realm != "" {
 		request.Header.Set(TargetRealmHeader, r.Realm)

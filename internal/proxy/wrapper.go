@@ -112,7 +112,10 @@ func (w *Wrapper) FromLocal(r *http.Request) (err error) {
 		return err
 	}
 
-	w.Target.Service = r.URL.Hostname()
+	w.Target.Service = r.Host // r.URL.Hostname()
+	if w.Target.Service == "" {
+		w.Target.Service = r.URL.Hostname()
+	}
 
 	if h := r.Header.Get(mess.TargetServiceHeader); h != "" {
 		w.Target.Service = h

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -45,7 +46,7 @@ func (p *Proxy) Close() error {
 	if p.closed.CompareAndSwap(false, true) {
 		if p.network == "unix" {
 			defer func(p *Proxy) {
-				if e := os.Remove(p.addr); e != nil {
+				if e := os.Remove(p.addr); e != nil && !errors.Is(e, fs.ErrNotExist) {
 					log.Println("error removing socket file:", e)
 				}
 			}(p)
@@ -126,12 +127,16 @@ func ServiceToNode(svc *mess.Service, nodeID uint64, dir string, handler http.Ha
 				r.Header.Set(mess.CallerHeader, internal.ConstructCaller(nodeID, svc.Realm, svc.Name))
 				handler(w, r)
 			}),
-			new(http2.Server),
+			&http2.Server{
+				MaxConcurrentStreams: 16,
+			},
 		),
 		ErrorLog: log.New(io.Discard, "", 0),
 	}
 
-	if err = http2.ConfigureServer(p.server, nil); err != nil {
+	if err = http2.ConfigureServer(p.server, &http2.Server{
+		MaxConcurrentStreams: 32,
+	}); err != nil {
 		_ = l.Close()
 		return nil, fmt.Errorf("http/2 server configuration error: %w", err)
 	}

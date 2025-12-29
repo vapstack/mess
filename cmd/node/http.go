@@ -183,6 +183,7 @@ func (n *node) setupProxyClient() {
 		ForceAttemptHTTP2:     true,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 2 * time.Second,
+		MaxIdleConnsPerHost:   8,
 
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: true,
@@ -298,12 +299,14 @@ func (n *node) setupPublicServer() (stopfn func(), errch chan error, err error) 
 	}
 
 	publicServer := &http.Server{
-		Handler:           gzhttp.GzipHandler(http.HandlerFunc(n.publicHandler)), // h2c.NewHandler(http.HandlerFunc(n.publicHandler), nil),
+		Handler:           gzhttp.GzipHandler(http.HandlerFunc(n.publicHandler)),
 		TLSConfig:         tlsConfig,
 		ErrorLog:          log.New(io.Discard, "", 0),
 		ReadHeaderTimeout: 4 * time.Second,
 	}
-	if err = http2.ConfigureServer(publicServer, nil); err != nil {
+	if err = http2.ConfigureServer(publicServer, &http2.Server{
+		MaxConcurrentStreams: 32,
+	}); err != nil {
 		return nil, nil, fmt.Errorf("http/2 server configuration error: %w", err)
 	}
 

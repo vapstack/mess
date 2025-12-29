@@ -44,7 +44,7 @@ func main() {
 	}
 	binPath := filepath.Dir(binName)
 
-	dev := isDev()
+	dev, devConfig := isDev()
 
 	if !dev {
 		if runtime.GOOS != "linux" {
@@ -80,26 +80,29 @@ func main() {
 		dev:    dev,
 	}
 
-	if err = os.MkdirAll(n.tmpdir, 0o700); err != nil {
-		log.Println("fatal:", err)
-		return
+	if !n.dev {
+		if err = os.MkdirAll(n.logdir, 0o700); err != nil {
+			log.Println("fatal:", err)
+			return
+		}
+		if err = os.MkdirAll(n.tmpdir, 0o700); err != nil {
+			log.Println("fatal:", err)
+			return
+		}
+		if err = os.MkdirAll(n.svcdir, 0o700); err != nil {
+			log.Println("fatal:", err)
+			return
+		}
 	}
-	if err = os.MkdirAll(n.logdir, 0o700); err != nil {
-		log.Println("fatal:", err)
-		return
-	}
-	if err = os.MkdirAll(n.svcdir, 0o700); err != nil {
-		log.Println("fatal:", err)
-		return
-	}
+
 	if err = os.MkdirAll(n.busdir, 0o700); err != nil {
 		log.Println("fatal:", err)
 		return
 	}
 
 	if n.dev {
-		log.Println("running in dev mode")
-		if err = n.loadDevState(); err != nil {
+		log.Println("starting in dev mode...")
+		if err = n.loadDevState(devConfig); err != nil {
 			log.Println("fatal:", err)
 			return
 		}
@@ -118,7 +121,8 @@ func main() {
 	bgen, err := newMonoBolt(int(n.id), filepath.Join(n.busdir, "last"))
 	if err != nil {
 		if errors.Is(err, bolterrors.ErrTimeout) {
-			log.Println("fatal: node is already running", err)
+			log.Println("fatal: node is already running")
+			return
 		}
 		log.Println("fatal: error initializing bus sequence:", err)
 		return
@@ -619,11 +623,31 @@ func (n *node) saveState(d *mess.NodeState) error {
 	return nil
 }
 
-func (n *node) loadDevState() error {
-	services, err := storage.LoadObject[mess.Services]("node.dev.json")
-	if err != nil {
-		return fmt.Errorf("reading node.json: %w", err)
+func (n *node) loadDevState(devConfig string) error {
+	if devConfig == "" {
+		devConfig = "node.dev.json"
 	}
+	services, err := storage.LoadObject[mess.Services](devConfig)
+	if err != nil {
+		return fmt.Errorf("reading %v: %w", devConfig, err)
+	}
+
+	devConfigDir := filepath.Dir(devConfig)
+	for _, svc := range *services {
+		if svc.Listen != "" && !filepath.IsAbs(svc.Listen) {
+			svc.Listen, err = filepath.Abs(filepath.Join(devConfigDir, svc.Listen))
+			if err != nil {
+				return fmt.Errorf("error constructing absolute path for Listen (%v): %w", svc.Listen, err)
+			}
+		}
+		if svc.Proxy != "" && !filepath.IsAbs(svc.Proxy) {
+			svc.Proxy, err = filepath.Abs(filepath.Join(devConfigDir, svc.Proxy))
+			if err != nil {
+				return fmt.Errorf("error constructing absolute path for Proxy (%v): %w", svc.Proxy, err)
+			}
+		}
+	}
+
 	state := &mess.NodeState{
 		Node: &mess.Node{
 			ID:         1,
@@ -711,14 +735,19 @@ func (n *node) rebuildAliasMapLocked() {
 
 type Producer[T any] func(context.Context, chan<- T)
 
-func isDev() bool {
-	var dev bool
+func isDev() (dev bool, conf string) {
 	for _, arg := range os.Args[1:] {
-		if dev = strings.TrimPrefix(arg, "-") == "dev"; dev {
+		arg = strings.TrimPrefix(arg, "-")
+		if dev = arg == "dev"; dev {
+			break
+		}
+		if strings.HasPrefix(arg, "dev=") {
+			dev = true
+			conf = strings.TrimPrefix(arg, "dev=")
 			break
 		}
 	}
-	return dev
+	return
 }
 
 type (

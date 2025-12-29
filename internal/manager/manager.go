@@ -66,8 +66,10 @@ func (m *Manager) Manage(s *mess.Service) error {
 	m.svcdir = filepath.Join(m.RootDir, realm, s.Name)
 	m.datadir = filepath.Join(m.svcdir, "data")
 
-	if err := os.MkdirAll(m.datadir, 0o700); err != nil {
-		return err
+	if !m.Dev {
+		if err := os.MkdirAll(m.datadir, 0o700); err != nil {
+			return err
+		}
 	}
 
 	m.current.Store(s)
@@ -77,7 +79,7 @@ func (m *Manager) Manage(s *mess.Service) error {
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("error reading metadata: %w", err)
-		} else {
+		} else if !m.Dev {
 			m.logf("version information is missing")
 		}
 		m.meta = new(metadata)
@@ -127,8 +129,8 @@ func (m *Manager) Cleanup() error {
 	return nil
 }
 
-func (m *Manager) Running() bool          { return m.process.Load().Running() }
-func (m *Manager) StoppedManually() bool  { return m.stopped.Load() }
+func (m *Manager) Running() bool          { return m.Dev || m.process.Load().Running() }
+func (m *Manager) StoppedManually() bool  { return !m.Dev && m.stopped.Load() }
 func (m *Manager) Passive() bool          { return m.current.Load().Passive }
 func (m *Manager) Order() int             { return m.current.Load().Order }
 func (m *Manager) Service() *mess.Service { return m.current.Load() }
@@ -143,7 +145,7 @@ func (m *Manager) Start() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.Running() {
+	if !m.Dev && m.Running() {
 		return nil
 	}
 
