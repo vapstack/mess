@@ -489,7 +489,7 @@ func (n *node) recalcRemoteServices() {
 				continue
 			}
 			for _, svc := range nd.Services {
-				if svc.Active && !svc.Passive {
+				if svc.Active && !svc.Private {
 					rm.add(svc.Realm, svc.Name, nd)
 
 					for _, alias := range svc.Alias {
@@ -529,7 +529,7 @@ func (n *node) getState() *mess.NodeState {
 	for _, s := range state.Node.Services {
 		if pm := sm.get(s); pm != nil {
 			s.Active = pm.Running()
-			s.Passive = pm.Passive()
+			s.Private = pm.Passive()
 		}
 	}
 
@@ -701,7 +701,7 @@ func (n *node) rebuildAliasMapLocked() {
 				continue
 			}
 			svc := pm.Service()
-			if svc == nil || svc.Passive {
+			if svc == nil || svc.Private {
 				continue
 			}
 			sm, ok := am[realm]

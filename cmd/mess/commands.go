@@ -418,7 +418,7 @@ func (cli *CLI) cmdShowRec(cmd *command) (int, error) {
 		Realm:   "namespace",
 		Alias:   []string{"friendly-name", "http-api"},
 		Manual:  false,
-		Passive: false,
+		Private: false,
 		Start:   "binary_filename",
 		Order:   10,
 		Args: []string{

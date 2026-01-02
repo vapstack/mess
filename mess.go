@@ -54,7 +54,7 @@ type Service struct {
 	Realm   string   `json:"realm"`   // service realm (namespace)
 	Manual  bool     `json:"manual"`  // no auto-start, no auto-restart
 	Active  bool     `json:"active"`  // is running
-	Passive bool     `json:"passive"` // no incoming connections
+	Private bool     `json:"private"` // no incoming routing
 	Start   string   `json:"start"`   // binary to start
 	Order   int      `json:"order"`   // start order
 	Args    []string `json:"args"`    // command-line arguments
@@ -168,7 +168,7 @@ func (s Services) Has(service string) bool {
 
 func (s Services) Get(service string) *Service {
 	for _, svc := range s {
-		if svc.Active && !svc.Passive && svc.Realm == env.Realm {
+		if svc.Active && !svc.Private && svc.Realm == env.Realm {
 			if svc.Name == service {
 				return svc
 			}

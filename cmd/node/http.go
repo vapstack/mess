@@ -109,13 +109,15 @@ func (n *node) tryRouteToLocal(w *proxy.Wrapper, r *http.Request) bool {
 }
 
 func (n *node) tryRouteToProcess(pm *manager.Manager, w *proxy.Wrapper, r *http.Request) bool {
+	s := pm.Service()
 	if n.id == w.Caller.NodeID {
-		svc := pm.Service()
-		if w.Caller.Realm == svc.Realm && w.Caller.Service == svc.Name {
-			return false
+		if w.Caller.Service == s.Name {
+			if w.Caller.Realm == s.Realm {
+				return false
+			}
 		}
 	}
-	if !pm.Passive() {
+	if !s.Private {
 		if p := pm.Proxy(); p != nil {
 			w.ToLocal()
 			p.ServeHTTP(w, r)
@@ -156,7 +158,7 @@ func (n *node) publicHandler(hw http.ResponseWriter, hr *http.Request) {
 		return
 	}
 
-	w.WriteHeader(http.StatusNotFound)
+	w.WriteHeader(http.StatusServiceUnavailable)
 }
 
 func (n *node) nodeHandler(w *proxy.Wrapper, r *http.Request, path []string, fromLocal bool) {

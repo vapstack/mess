@@ -131,7 +131,7 @@ func (m *Manager) Cleanup() error {
 
 func (m *Manager) Running() bool          { return m.Dev || m.process.Load().Running() }
 func (m *Manager) StoppedManually() bool  { return !m.Dev && m.stopped.Load() }
-func (m *Manager) Passive() bool          { return m.current.Load().Passive }
+func (m *Manager) Passive() bool          { return m.current.Load().Private }
 func (m *Manager) Order() int             { return m.current.Load().Order }
 func (m *Manager) Service() *mess.Service { return m.current.Load() }
 func (m *Manager) Proxy() *proxy.Proxy    { return m.n2s.Load() }
