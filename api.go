@@ -50,6 +50,18 @@ func (a API) State(ctx context.Context) (*NodeState, error) {
 	return nd, a.send(ctx, "/state", nil, nd)
 }
 
+// Peers returns a list of nodes with services that have the specified service,
+// excluding the current service (the one making the call).
+// Peers returns all matching services in the current realm,
+// including currently stopped and/or unavailable.
+func (a API) Peers(ctx context.Context, service string) (NodeList, error) {
+	ns, err := a.State(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return ns.Peers(service), nil
+}
+
 // NextSequence returns the next sequential ID,
 // which is globally unique across all nodes in the cluster.
 // It consists of a 16-bit node ID and a 48-bit counter.

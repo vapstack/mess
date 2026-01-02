@@ -116,6 +116,72 @@ func (ns *NodeState) Filter(fn func(n *Node) bool) NodeList {
 	return nodes
 }
 
+// Peers returns a NodeList holding nodes having the specified service,
+// excluding the current service (the one from environment).
+// Peers returns all matching services, including currently stopped.
+func (ns *NodeState) Peers(service string) NodeList {
+	var nodes []*Node
+
+	if ns.Node != nil {
+		var n *Node
+		for _, svc := range ns.Node.Services {
+			if svc.Private {
+				continue
+			}
+			if svc.Realm != env.Realm {
+				continue
+			}
+			if svc.Name == env.Service {
+				continue
+			}
+			for _, alias := range svc.Alias {
+				if alias == service {
+					if n == nil {
+						n = ns.Node.Clone()
+						n.Services = make(Services, 0)
+						nodes = append(nodes, n)
+					}
+					n.Services = append(n.Services, svc)
+					break
+				}
+			}
+		}
+	}
+
+	for _, node := range ns.Map {
+		var n *Node
+		for _, svc := range node.Services {
+			if svc.Private {
+				continue
+			}
+			if svc.Realm != env.Realm {
+				continue
+			}
+			if svc.Name == service {
+				if n == nil {
+					n = node.Clone()
+					n.Services = make(Services, 0)
+					nodes = append(nodes, n)
+				}
+				n.Services = append(n.Services, svc)
+				continue
+			}
+			for _, alias := range svc.Alias {
+				if alias == service {
+					if n == nil {
+						n = node.Clone()
+						n.Services = make(Services, 0)
+						nodes = append(nodes, n)
+					}
+					n.Services = append(n.Services, svc)
+					break
+				}
+			}
+		}
+	}
+	return nodes
+}
+
 // NodesByProximity returns a NodeList ordered by proximity to the current node,
 // including the current node itself as the first element.
 // If NodeState does not hold a valid Node, nil is returned.
@@ -137,9 +203,9 @@ func (ns *NodeState) NodesByProximity() NodeList {
 func (s *Service) Clone() *Service {
 	x := new(Service)
 	*x = *s
-	x.Args = slices.Clone(s.Args)   // append(make([]string, 0, len(s.Args)), s.Args...)
-	x.Env = slices.Clone(s.Env)     // append(make([]string, 0, len(s.Env)), s.Env...)
-	x.Alias = slices.Clone(s.Alias) // append(make([]string, 0, len(s.Alias)), s.Alias...)
+	x.Args = slices.Clone(s.Args)
+	x.Env = slices.Clone(s.Env)
+	x.Alias = slices.Clone(s.Alias)
 	x.Meta = nil
 	if len(s.Meta) > 0 {
 		x.Meta = make(map[string]string, len(s.Meta))
@@ -162,6 +228,7 @@ func (s Services) Clone() Services {
 	return x
 }
 
+/*
 func (s Services) Has(service string) bool {
 	return s.Get(service) != nil
 }
@@ -180,6 +247,17 @@ func (s Services) Get(service string) *Service {
 		}
 	}
 	return nil
+}
+*/
+
+func (s Services) Filter(fn func(*Service) bool) Services {
+	result := make(Services, 0, len(s))
+	for _, svc := range s {
+		if fn(svc) {
+			result = append(result, svc)
+		}
+	}
+	return result
 }
 
 /**/
@@ -228,8 +306,10 @@ func (n *Node) ProximitySort(a, b *Node) int {
 	return 0
 }
 
+/*
 func (n *Node) Has(service string) bool     { return n.Services.Has(service) }
 func (n *Node) Get(service string) *Service { return n.Services.Get(service) }
+*/
 
 func (n *Node) Address() string {
 	if n.Bind != "" {
@@ -242,6 +322,14 @@ func (n *Node) Clone() *Node {
 	x := new(Node)
 	*x = *n
 	x.Services = n.Services.Clone()
+	x.Publish = n.Publish.Clone()
+	x.Listen = n.Listen.Clone()
+	if n.Meta != nil {
+		x.Meta = make(map[string]string)
+		for k, v := range n.Meta {
+			x.Meta[k] = v
+		}
+	}
 	return x
 }
 
@@ -256,6 +344,15 @@ func (nl NodeList) Filter(fn func(n *Node) bool) NodeList {
 		if fn(node) {
 			nodes = append(nodes, node)
 		}
+	}
+	return nodes
+}
+
+// Clone returns a deep copy of the NodeList.
+func (nl NodeList) Clone() NodeList {
+	nodes := make(NodeList, len(nl))
+	for i, node := range nl {
+		nodes[i] = node.Clone()
 	}
 	return nodes
 }
