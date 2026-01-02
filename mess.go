@@ -54,7 +54,7 @@ type Service struct {
 	Realm   string   `json:"realm"`   // service realm (namespace)
 	Manual  bool     `json:"manual"`  // no auto-start, no auto-restart
 	Active  bool     `json:"active"`  // is running
-	Private bool     `json:"private"` // no incoming routing
+	Private bool     `json:"private"` // no incoming routing, no resolve
 	Start   string   `json:"start"`   // binary to start
 	Order   int      `json:"order"`   // start order
 	Args    []string `json:"args"`    // command-line arguments
@@ -116,9 +116,10 @@ func (ns *NodeState) Filter(fn func(n *Node) bool) NodeList {
 	return nodes
 }
 
-// Peers returns a NodeList holding nodes having the specified service,
-// excluding the current service (the one from environment).
-// Peers returns all matching services, including currently stopped.
+// Peers returns a list of nodes with services matching the specified service name.
+// The current service (the one from the environment) is excluded.
+// Only services in the current realm are considered.
+// Services are returned regardless of their current availability or runtime state.
 func (ns *NodeState) Peers(service string) NodeList {
 	var nodes []*Node
 
@@ -134,16 +135,13 @@ func (ns *NodeState) Peers(service string) NodeList {
 			if svc.Name == env.Service {
 				continue
 			}
-			for _, alias := range svc.Alias {
-				if alias == service {
-					if n == nil {
-						n = ns.Node.Clone()
-						n.Services = make(Services, 0)
-						nodes = append(nodes, n)
-					}
-					n.Services = append(n.Services, svc)
-					break
+			if svc.HasAlias(service) {
+				if n == nil {
+					n = ns.Node.Clone()
+					n.Services = make(Services, 0)
+					nodes = append(nodes, n)
 				}
+				n.Services = append(n.Services, svc)
 			}
 		}
 	}
@@ -157,28 +155,123 @@ func (ns *NodeState) Peers(service string) NodeList {
 			if svc.Realm != env.Realm {
 				continue
 			}
-			if svc.Name == service {
+			if svc.Name == service || svc.HasAlias(service) {
 				if n == nil {
 					n = node.Clone()
 					n.Services = make(Services, 0)
 					nodes = append(nodes, n)
 				}
 				n.Services = append(n.Services, svc)
+			}
+		}
+	}
+	return nodes
+}
+
+// Resolve returns a list of node with services matching the specified service name
+// and available at the time of the call.
+// Only services in the current realm are considered.
+func (ns *NodeState) Resolve(service string) NodeList {
+	var nodes []*Node
+
+	if ns.Node != nil {
+		var n *Node
+		for _, svc := range ns.Node.Services {
+			if svc.Private || !svc.Active {
 				continue
 			}
+			if svc.Realm != env.Realm {
+				continue
+			}
+			if svc.Name == service || svc.HasAlias(service) {
+				if n == nil {
+					n = ns.Node.Clone()
+					n.Services = make(Services, 0)
+					nodes = append(nodes, n)
+				}
+				n.Services = append(n.Services, svc)
+			}
+		}
+	}
+
+	for _, node := range ns.Map {
+		var n *Node
+		for _, svc := range node.Services {
+			if svc.Private || !svc.Active {
+				continue
+			}
+			if svc.Realm != env.Realm {
+				continue
+			}
+			if svc.Name == service || svc.HasAlias(service) {
+				if n == nil {
+					n = node.Clone()
+					n.Services = make(Services, 0)
+					nodes = append(nodes, n)
+				}
+				n.Services = append(n.Services, svc)
+			}
+		}
+	}
+	return nodes
+}
+
+func (ns *NodeState) collect(service string, activeOnly bool, localNameMatch bool) NodeList {
+	var nodes []*Node
+
+	addNode := func(node *Node, excludeName string, allowNameMatch bool) {
+		if node == nil {
+			return
+		}
+
+		var out *Node
+		outNode := func() *Node {
+			if out == nil {
+				out = node.Clone()
+				out.Services = make(Services, 0)
+				nodes = append(nodes, out)
+			}
+			return out
+		}
+
+		for _, svc := range node.Services {
+			if svc.Private {
+				continue
+			}
+			if svc.Realm != env.Realm {
+				continue
+			}
+			if activeOnly && !svc.Active {
+				continue
+			}
+			if excludeName != "" && svc.Name == excludeName {
+				continue
+			}
+
+			if allowNameMatch && svc.Name == service {
+				o := outNode()
+				o.Services = append(o.Services, svc)
+				continue
+			}
+
 			for _, alias := range svc.Alias {
 				if alias == service {
-					if n == nil {
-						n = node.Clone()
-						n.Services = make(Services, 0)
-						nodes = append(nodes, n)
-					}
-					n.Services = append(n.Services, svc)
+					o := outNode()
+					o.Services = append(o.Services, svc)
 					break
 				}
 			}
 		}
 	}
+
+	// Local node: exclude env.Service. Name match on local is controlled by localNameMatch.
+	addNode(ns.Node, env.Service, localNameMatch)
+
+	// Remote nodes: no exclusion, always allow name match.
+	for _, node := range ns.Map {
+		addNode(node, "", true)
+	}
+
 	return nodes
 }
 
@@ -199,6 +292,15 @@ func (ns *NodeState) NodesByProximity() NodeList {
 }
 
 /**/
+
+func (s *Service) HasAlias(alias string) bool {
+	for _, a := range s.Alias {
+		if a == alias {
+			return true
+		}
+	}
+	return false
+}
 
 func (s *Service) Clone() *Service {
 	x := new(Service)

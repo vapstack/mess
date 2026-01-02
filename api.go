@@ -50,16 +50,27 @@ func (a API) State(ctx context.Context) (*NodeState, error) {
 	return nd, a.send(ctx, "/state", nil, nd)
 }
 
-// Peers returns a list of nodes with services that have the specified service,
-// excluding the current service (the one making the call).
-// Peers returns all matching services in the current realm,
-// including currently stopped and/or unavailable.
+// Peers returns a list of nodes with services matching the specified service name.
+// The current service (the one making the call) is excluded.
+// Only services in the current realm are considered.
+// Services are returned regardless of their current availability or runtime state.
 func (a API) Peers(ctx context.Context, service string) (NodeList, error) {
 	ns, err := a.State(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return ns.Peers(service), nil
+}
+
+// Resolve returns a list of node with services matching the specified service name
+// and available at the time of the call.
+// Only services in the current realm are considered.
+func (a API) Resolve(ctx context.Context, service string) (NodeList, error) {
+	ns, err := a.State(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return ns.Resolve(service), nil
 }
 
 // NextSequence returns the next sequential ID,
