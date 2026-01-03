@@ -258,7 +258,7 @@ func (n *node) eventsStream(req *mess.EventsRequest) (Producer[mess.Event], erro
 
 			if len(events) < cap(events) {
 				select {
-				case <-time.After(time.Second):
+				case <-time.After(jitter(time.Second, 0.4)):
 				case <-done:
 					return
 				}

@@ -127,7 +127,7 @@ func (n *node) writeLogs(realm, service string, msgs ...[]byte) {
 	}
 
 	batch := db.NewBatch()
-	defer func(b *pebble.Batch) { _ = b.Close() }(batch)
+	defer func() { _ = batch.Close() }()
 
 	for _, msg := range msgs {
 
@@ -256,7 +256,7 @@ func (n *node) logsStream(req *mess.LogsRequest) (Producer[mess.LogRecord], erro
 
 			if len(logs) < cap(logs) {
 				select {
-				case <-time.After(time.Second):
+				case <-time.After(jitter(time.Second, 0.4)):
 				case <-done:
 					return
 				}
@@ -307,7 +307,11 @@ func readLogs(db *dbInstance, lastKnown []byte, destSlice []mess.LogRecord, req 
 			ID:   int64(binary.BigEndian.Uint64(k)),
 			Data: bytes.Clone(v),
 		})
-		copy(lastKnown, k)
+		if len(lastKnown) < len(k) {
+			lastKnown = bytes.Clone(k)
+		} else {
+			copy(lastKnown, k)
+		}
 
 		added++
 		mem += len(v) // rough approx.
@@ -348,6 +352,9 @@ func findNegativeOffset(db *dbInstance, offset int64) (key []byte, err error) {
 		if offset > 0 { // offset + 1 because first element will be filtered out
 			break
 		}
+	}
+	if offset <= 0 {
+		return nil, nil
 	}
 	return
 }

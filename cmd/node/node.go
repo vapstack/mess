@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"math/rand/v2"
 	"net/http"
 	"net/http/httputil"
 	"os"
@@ -779,4 +780,12 @@ func removeFile(name string) {
 			log.Printf("error removing %v: %v\n", name, err)
 		}
 	}
+}
+
+func jitter(d time.Duration, ratio float64) time.Duration {
+	if ratio <= 0 {
+		return d
+	}
+	j := (rand.Float64()*2 - 1) * (float64(d) * ratio)
+	return time.Duration(float64(d) + j)
 }
