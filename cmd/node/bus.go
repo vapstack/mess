@@ -141,13 +141,12 @@ func (n *node) publish(realm string, req *mess.PublishRequest) error {
 	batch := db.NewBatch()
 	defer closeBatch(batch)
 
-	var id monotime.UUID
+	ids, err := n.busids.NextN(len(req.Events))
+	if err != nil {
+		return fmt.Errorf("error reserving event ids: %w", err)
+	}
 
-	for _, data := range req.Events {
-
-		if id, err = n.busids.Next(); err != nil {
-			return fmt.Errorf("error reserving event id: %w", err)
-		}
+	for i, data := range req.Events {
 
 		buf := getBusBuf()
 		bufs = append(bufs, buf)
@@ -155,7 +154,7 @@ func (n *node) publish(realm string, req *mess.PublishRequest) error {
 		buf.Write(metadata)
 		buf.Write(data)
 
-		if err = batch.Set(id[:], buf.Bytes(), nil); err != nil {
+		if err = batch.Set(ids[i][:], buf.Bytes(), nil); err != nil {
 			return fmt.Errorf("write error: %w", err)
 		}
 	}
@@ -166,7 +165,7 @@ func (n *node) publish(realm string, req *mess.PublishRequest) error {
 		return fmt.Errorf("db commit error: %w", err)
 	}
 
-	n.busTopics.reg(realm, req.Topic, id)
+	n.busTopics.reg(realm, req.Topic, ids[len(ids)-1])
 
 	if db.wcnt.Add(1)%5000 == 0 {
 		n.cleanupEvents(db)
@@ -176,7 +175,7 @@ func (n *node) publish(realm string, req *mess.PublishRequest) error {
 }
 
 func (n *node) cleanupEvents(db *dbInstance) {
-	start := monotime.MinUUID(int(n.id), time.Now().Add(-eventTTL*10))
+	start := monotime.MinUUID(int(n.id), time.Now().Add(-eventTTL*100))
 	end := monotime.MinUUID(int(n.id), time.Now().Add(-eventTTL))
 	if err := db.DeleteRange(start[:], end[:], pebble.NoSync); err != nil {
 		n.logf("error removing expired events: %v", err)
@@ -640,7 +639,7 @@ func (n *node) subscriptionStream(realm string, req *mess.SubscribeRequest) (Pro
 			go p(ctx, pch)
 		}
 
-		stream := mergeChans(chans...)
+		stream := mergeChans(ctx, chans...)
 
 		// producers receive the same context and should cancel themselves
 
@@ -668,18 +667,21 @@ func (n *node) subscriptionStream(realm string, req *mess.SubscribeRequest) (Pro
 	return p, nil
 }
 
-func mergeChans[T any](chans ...<-chan T) <-chan T {
+func mergeChans[T any](ctx context.Context, chans ...<-chan T) <-chan T {
 	out := make(chan T, len(chans))
 
 	var wg sync.WaitGroup
 
 	wg.Add(len(chans))
-
+	done := ctx.Done()
 	for _, ch := range chans {
 		go func(c <-chan T) {
 			defer wg.Done()
 			for v := range c {
-				out <- v
+				select {
+				case out <- v:
+				case <-done:
+				}
 			}
 		}(ch)
 	}
@@ -764,6 +766,29 @@ func (m *monoBolt) Next() (monotime.UUID, error) {
 	return uuid, tx.Commit()
 }
 
+func (m *monoBolt) NextN(n int) ([]monotime.UUID, error) {
+	if n == 0 {
+		return nil, nil
+	}
+	if n < 0 {
+		return nil, fmt.Errorf("negative n")
+	}
+	uuids := make([]monotime.UUID, n)
+	tx, err := m.bolt.Begin(true)
+	if err != nil {
+		return nil, err
+	}
+	defer rollback(tx)
+
+	for i := 0; i < n; i++ {
+		uuids[i] = m.mono.Next()
+	}
+	if err = tx.Bucket(m.buck).Put(m.key, uuids[len(uuids)-1][:]); err != nil {
+		return nil, err
+	}
+	return uuids, tx.Commit()
+}
+
 func (m *monoBolt) close() error {
 	return m.bolt.Close()
 }
@@ -797,7 +822,9 @@ func (tt *topicTracker) reg(realm, topic string, uuid monotime.UUID) {
 	} else {
 		t := new(atomic.Value)
 		t.Store(uuid)
-		tt.topics.Store(key, t)
+		if x, loaded := tt.topics.LoadOrStore(key, t); loaded {
+			x.(*atomic.Value).Store(uuid)
+		}
 	}
 }
 
