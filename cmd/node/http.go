@@ -181,13 +181,29 @@ func (n *node) nodeHandler(w *proxy.Wrapper, r *http.Request, path []string, fro
 
 func (n *node) setupProxyClient() {
 
-	transport := gzhttp.Transport(&http.Transport{
+	/*
+		transport := gzhttp.Transport(&http.Transport{
 
-		ForceAttemptHTTP2:     true,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 2 * time.Second,
-		MaxIdleConnsPerHost:   8,
+			ForceAttemptHTTP2:     true,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 2 * time.Second,
+			MaxIdleConnsPerHost:   8,
 
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true,
+				GetClientCertificate: func(_ *tls.CertificateRequestInfo) (*tls.Certificate, error) {
+					return n.cert.Load(), nil
+				},
+				VerifyPeerCertificate: tlsutil.PeerCertVerifier(n.id, n.pool),
+				RootCAs:               n.pool,
+				MinVersion:            tls.VersionTLS13,
+			},
+		})
+	*/
+	//
+	// experiment
+	//
+	transport := gzhttp.Transport(&http2.Transport{
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: true,
 			GetClientCertificate: func(_ *tls.CertificateRequestInfo) (*tls.Certificate, error) {
@@ -197,6 +213,20 @@ func (n *node) setupProxyClient() {
 			RootCAs:               n.pool,
 			MinVersion:            tls.VersionTLS13,
 		},
+		ReadIdleTimeout: 3 * time.Second,
+		// DialTLSContext:             nil,
+		// ConnPool:                   nil,
+		// DisableCompression:         false,
+		// AllowHTTP:                  false,
+		// MaxHeaderListSize:          0,
+		// MaxReadFrameSize:           0,
+		// MaxDecoderHeaderTableSize:  0,
+		// MaxEncoderHeaderTableSize:  0,
+		// StrictMaxConcurrentStreams: false,
+		// IdleConnTimeout:            0,
+		// PingTimeout:                0,
+		// WriteByteTimeout:           0,
+		// CountError:                 nil,
 	})
 
 	n.proxy = &httputil.ReverseProxy{
