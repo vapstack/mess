@@ -28,6 +28,10 @@ const eventTTL = 7 * 24 * time.Hour
 
 func (n *node) getBusDB(realm, topic string, autoCreate bool) (*dbInstance, error) {
 
+	if realm == "" {
+		realm = "default"
+	}
+
 	key := dbKey{
 		realm: realm,
 		name:  topic,
@@ -41,10 +45,6 @@ func (n *node) getBusDB(realm, topic string, autoCreate bool) (*dbInstance, erro
 
 	if v, ok := n.busdb.Load(key); ok {
 		return v.(*dbInstance), nil
-	}
-
-	if realm == "" {
-		realm = "default"
 	}
 
 	path := filepath.Join(n.busdir, realm, topic)
