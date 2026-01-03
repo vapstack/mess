@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/klauspost/compress/gzhttp"
@@ -226,8 +227,8 @@ type clientMeter struct {
 	Status int
 	Bytes  uint64
 	Body   io.ReadCloser
-
-	node *node
+	done   atomic.Bool // todo: reset when pool is implemented
+	node   *node
 }
 
 func (rt *roundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -254,22 +255,24 @@ func (rt *roundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 func (m *clientMeter) Read(p []byte) (int, error) {
-
 	n, err := m.Body.Read(p)
 	m.Bytes += uint64(n)
-
 	if err != nil {
+		m.finish()
+	}
+	return n, err
+}
+
+func (m *clientMeter) finish() {
+	if m.done.CompareAndSwap(false, true) {
 		m.node.collectClientMetrics(m)
 		m.release()
 	}
-
-	return n, err
 }
 
 func (m *clientMeter) Close() error {
 	err := m.Body.Close()
-	m.node.collectClientMetrics(m)
-	m.release()
+	m.finish()
 	return err
 }
 
