@@ -1,13 +1,13 @@
 package mess
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
 	"sync"
-	"sync/atomic"
 
 	"github.com/vapstack/monotime"
 	"go.etcd.io/bbolt"
@@ -74,14 +74,51 @@ type (
 	}
 )
 
-type EventCursor []monotime.UUID
-
 const MaxEventSize = 16 << 20
 
+// EventCursor is a vector clock that represents a per-node event position vector
+// based on monotime UUIDs.
+//
+// Each entry in the cursor stores the last observed event UUID for a specific node.
+// The node identity is encoded inside monotime.UUID.
+//
+// At most one UUID is stored per node. For each node, the UUID represents
+// the latest known event for that node.
+type EventCursor []monotime.UUID
+
+// Update updates the cursor entry for the node encoded in the provided uuid
+// if it is newer than the existing value associated with that node.
+// If the node is not yet present in the cursor, uuid is appended.
+//
+// Update updates the cursor in-place.
+// The returned cursor shares the same underlying array.
 func (ec EventCursor) Update(uuid monotime.UUID) EventCursor {
 	nodeID := uuid.NodeID()
 	for i, u := range ec {
 		if u.NodeID() == nodeID {
+			if bytes.Compare(ec[i][:], uuid[:]) < 0 {
+				ec[i] = uuid
+			}
+			return ec
+		}
+	}
+	return append(ec, uuid)
+}
+
+// Clone returns a copy of the cursor.
+func (ec EventCursor) Clone() EventCursor {
+	return slices.Clone(ec)
+}
+
+// Set overwrites the cursor entry for the node encoded in the uuid.
+// If the node is not present, the provided uuid is appended.
+//
+// Set updates the cursor in-place.
+// The returned cursor shares the same underlying array.
+func (ec EventCursor) Set(uuid monotime.UUID) EventCursor {
+	nodeID := uuid.NodeID()
+	for i, v := range ec {
+		if v.NodeID() == nodeID {
 			ec[i] = uuid
 			return ec
 		}
@@ -89,13 +126,40 @@ func (ec EventCursor) Update(uuid monotime.UUID) EventCursor {
 	return append(ec, uuid)
 }
 
+// ExtractNode returns the event ID associated with the given node ID.
+// If the node is not present in the cursor, ExtractNode returns monotime.ZeroUUID.
 func (ec EventCursor) ExtractNode(id uint64) monotime.UUID {
-	for _, u := range ec {
-		if uint64(u.NodeID()) == id {
-			return u
+	for _, v := range ec {
+		if uint64(v.NodeID()) == id {
+			return v
 		}
 	}
 	return monotime.ZeroUUID
+}
+
+// Merge merges another cursor into the current.
+//
+// For each node, the resulting cursor contains the newest event ID.
+// If a node exists in both cursors, Update semantics are applied.
+// Nodes present only in the provided cursor are appended.
+//
+// Merge updates the cursor in-place.
+// The returned cursor shares the same underlying array.
+func (ec EventCursor) Merge(cursor EventCursor) EventCursor {
+	result := ec
+	for _, v := range cursor {
+		result = ec.Update(v)
+	}
+	return result
+}
+
+// Nodes returns the list of node IDs present in the cursor.
+func (ec EventCursor) Nodes() []uint64 {
+	result := make([]uint64, len(ec))
+	for i, v := range ec {
+		result[i] = uint64(v.NodeID())
+	}
+	return result
 }
 
 /**/
@@ -160,6 +224,17 @@ func (s *Subscription) Cursor() EventCursor {
 	return s.stored.get()
 }
 
+// Update updates the cursor entry for the node encoded in the provided
+// uuid if it is newer than the existing value associated with that node.
+// If the node is not yet present in the cursor, uuid is appended.
+//
+// This operation cannot be rolled back and must be used with caution.
+//
+// It does not interrupt any active handlers and does not shift their positions.
+func (s *Subscription) Update(uuid monotime.UUID) error {
+	return s.stored.update(uuid)
+}
+
 // Topic returns the subscription topic.
 func (s *Subscription) Topic() string {
 	return s.topic
@@ -180,16 +255,17 @@ func (s *Subscription) Close() error {
 /**/
 
 type boltCursor struct {
-	cursor atomic.Value
+	cursor EventCursor
 	bolt   *bbolt.DB
 	buck   []byte
 	key    []byte
+	mu     sync.RWMutex
 }
 
 func newBoltCursor(topic string, start EventCursor, filename string) (*boltCursor, error) {
-	bolt, err := bbolt.Open(filename, 0o600, nil)
-	if err != nil {
-		return nil, fmt.Errorf("initialization error: %w", err)
+	bolt, dbErr := bbolt.Open(filename, 0o600, nil)
+	if dbErr != nil {
+		return nil, fmt.Errorf("initialization error: %w", dbErr)
 	}
 
 	buck := []byte("mono")
@@ -197,7 +273,7 @@ func newBoltCursor(topic string, start EventCursor, filename string) (*boltCurso
 
 	var cur EventCursor
 
-	err = bolt.Update(func(tx *bbolt.Tx) error {
+	err := bolt.Update(func(tx *bbolt.Tx) error {
 
 		b, err := tx.CreateBucketIfNotExists(buck)
 		if err != nil {
@@ -246,21 +322,24 @@ func newBoltCursor(topic string, start EventCursor, filename string) (*boltCurso
 	}
 
 	m := &boltCursor{
-		bolt: bolt,
-		buck: buck,
-		key:  key,
+		cursor: cur,
+		bolt:   bolt,
+		buck:   buck,
+		key:    key,
 	}
-
-	m.cursor.Store(cur)
 
 	return m, nil
 }
 
 func (c *boltCursor) get() EventCursor {
-	return slices.Clone(c.cursor.Load().(EventCursor))
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return slices.Clone(c.cursor)
 }
 
 func (c *boltCursor) close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.bolt.Close()
 }
 
@@ -269,9 +348,10 @@ func (c *boltCursor) update(uuid monotime.UUID) error {
 		return fmt.Errorf("UUID is not valid")
 	}
 
-	cur := c.cursor.Load().(EventCursor).Update(uuid)
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
-	c.cursor.Store(cur)
+	cur := c.cursor.Update(uuid)
 
 	tx, err := c.bolt.Begin(true)
 	if err != nil {
@@ -283,12 +363,15 @@ func (c *boltCursor) update(uuid monotime.UUID) error {
 	for _, id := range cur {
 		v = append(v, id[:]...)
 	}
-
 	if err = tx.Bucket(c.buck).Put(c.key, v); err != nil {
 		return err
 	}
 
-	return tx.Commit()
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	c.cursor = cur
+	return nil
 }
 
 func rollback(tx *bbolt.Tx) { _ = tx.Rollback() }
