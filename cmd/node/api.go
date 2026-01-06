@@ -236,7 +236,7 @@ func init() {
 			fn: func(n *node, w *proxy.Wrapper, r *http.Request) {
 				req := rMust(BodyTo[mess.PublishRequest](w, r, 64<<20))
 				rFail(req.Topic == "", "topic is empty")
-				sCheck(n.publish(w.Caller.Realm, req))
+				sCheck(send(w, r, sMust(n.publish(w.Caller.Realm, req))))
 			},
 		},
 		"subscribe": {

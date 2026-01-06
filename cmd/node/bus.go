@@ -106,28 +106,28 @@ func putBusBuf(b *bytes.Buffer) {
 	pubBufPool.Put(b)
 }
 
-func (n *node) publish(realm string, req *mess.PublishRequest) error {
+func (n *node) publish(realm string, req *mess.PublishRequest) ([]monotime.UUID, error) {
 
 	if len(req.Events) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	for i, data := range req.Events {
 		if len(data) > mess.MaxEventSize {
-			return fmt.Errorf("max event size is %v, got %v (index: %v)", mess.MaxEventSize, len(data), i)
+			return nil, fmt.Errorf("max event size is %v, got %v (index: %v)", mess.MaxEventSize, len(data), i)
 		}
 	}
 
 	db, err := n.getBusDB(realm, req.Topic, true)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	metaBuf := getBusBuf()
 	defer putBusBuf(metaBuf)
 
 	if err = gob.NewEncoder(metaBuf).Encode(req.Meta); err != nil {
-		return fmt.Errorf("error encoding field data: %w", err)
+		return nil, fmt.Errorf("error encoding field data: %w", err)
 	}
 	metadata := metaBuf.Bytes()
 
@@ -143,7 +143,7 @@ func (n *node) publish(realm string, req *mess.PublishRequest) error {
 
 	ids, err := n.busids.NextN(len(req.Events))
 	if err != nil {
-		return fmt.Errorf("error reserving event ids: %w", err)
+		return nil, fmt.Errorf("error reserving event ids: %w", err)
 	}
 
 	for i, data := range req.Events {
@@ -155,23 +155,23 @@ func (n *node) publish(realm string, req *mess.PublishRequest) error {
 		buf.Write(data)
 
 		if err = batch.Set(ids[i][:], buf.Bytes(), nil); err != nil {
-			return fmt.Errorf("write error: %w", err)
+			return nil, fmt.Errorf("write error: %w", err)
 		}
 	}
 
 	// todo: notify or somehow increase counters/metrics
 
 	if err = batch.Commit(pebble.Sync); err != nil {
-		return fmt.Errorf("db commit error: %w", err)
+		return nil, fmt.Errorf("db commit error: %w", err)
 	}
 
 	n.busTopics.reg(realm, req.Topic, ids[len(ids)-1])
 
-	if db.wcnt.Add(1)%5000 == 0 {
+	if db.wcnt.Add(1)%50000 == 0 {
 		n.cleanupEvents(db)
 	}
 
-	return nil
+	return ids, nil
 }
 
 func (n *node) cleanupEvents(db *dbInstance) {
@@ -815,10 +815,14 @@ func (tt *topicTracker) reg(realm, topic string, uuid monotime.UUID) {
 		realm: realm,
 		name:  topic,
 	}
-	// the most recent uuid is not required, so the last write wins
+	// the most recent uuid is not required
 	v, ok := tt.topics.Load(key)
 	if ok {
-		v.(*atomic.Value).Store(uuid)
+		stored := v.(*atomic.Value)
+		s := stored.Load().(monotime.UUID)
+		if bytes.Compare(s[:], uuid[:]) < 1 {
+			stored.Store(uuid)
+		}
 	} else {
 		t := new(atomic.Value)
 		t.Store(uuid)

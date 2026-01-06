@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/vapstack/mess/internal"
+	"github.com/vapstack/monotime"
 )
 
 // State is a helper for API.State
@@ -36,6 +37,8 @@ import (
 // func CreateSubscription(filename string, topic string, cursor EventCursor) (*Subscription, error) {
 // 	return DefaultAPI.CreateSubscription(filename, topic, cursor)
 // }
+
+/**/
 
 // API provides methods to interact with the mess.
 type API struct {
@@ -92,20 +95,23 @@ func (a API) NextNamedSequence(ctx context.Context, name string) (uint64, error)
 // Publish publishes the provided events on the specified topic.
 // Meta fields, if specified, will be stored with each event.
 // Publish guarantees that either all the provided events are stored or none.
-// If a nil error is returned, all events are successfully published.
-func (a API) Publish(ctx context.Context, req PublishRequest) error {
+// If a nil error is returned, all events are successfully published and
+// the returned slice contains the IDs of the stored events.
+func (a API) Publish(ctx context.Context, req PublishRequest) ([]monotime.UUID, error) {
 	if req.Topic == "" {
-		return errors.New("topic is empty")
+		return nil, errors.New("topic is empty")
 	}
 	if len(req.Events) == 0 {
-		return nil
+		return nil, nil
 	}
 	for i, event := range req.Events {
 		if len(event) > MaxEventSize {
-			return fmt.Errorf("max event size is %v, got %v (index: %v)", MaxEventSize, len(event), i)
+			return nil, fmt.Errorf("max event size is %v, got %v (index: %v)", MaxEventSize, len(event), i)
 		}
 	}
-	return a.send(ctx, "/publish", req, nil)
+	ids := make([]monotime.UUID, 0)
+	err := a.send(ctx, "/publish", req, &ids)
+	return ids, err
 }
 
 // Subscribe receives events from the specified topic using the provided cursor as an offset.
