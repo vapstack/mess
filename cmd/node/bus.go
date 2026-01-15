@@ -622,9 +622,10 @@ func (n *node) subscriptionStream(realm string, req *mess.SubscribeRequest) (Pro
 	if err != nil {
 		return nil, err
 	}
-	if len(producers) == 0 {
-		return nil, fmt.Errorf("no event producers found for topic %v", req.Topic)
-	}
+
+	// if len(producers) == 0 {
+	// 	return nil, fmt.Errorf("no event producers found for topic %v", req.Topic)
+	// }
 
 	p := func(ctx context.Context, out chan<- mess.Event) {
 
@@ -643,7 +644,7 @@ func (n *node) subscriptionStream(realm string, req *mess.SubscribeRequest) (Pro
 
 		// producers receive the same context and should cancel themselves
 
-		tick := time.NewTicker(time.Minute)
+		tick := time.NewTicker(15 * time.Second)
 		for {
 			select {
 			case v, ok := <-stream:
