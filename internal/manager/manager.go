@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -198,6 +199,7 @@ func (m *Manager) Start() error {
 				mess.EnvNodeID:  strconv.FormatUint(m.NodeID, 10),
 				mess.EnvRealm:   svc.Realm,
 				mess.EnvService: svc.Name,
+				mess.EnvAlias:   strings.Join(svc.Alias, ","),
 				mess.EnvDataDir: m.datadir,
 				mess.EnvProxy:   s2n.Addr(),
 			},

@@ -13,6 +13,7 @@ const (
 	EnvNodeID  = "MESS_NODE_ID"
 	EnvRealm   = "MESS_REALM"
 	EnvService = "MESS_SERVICE"
+	EnvAlias   = "MESS_ALIAS"
 	EnvDataDir = "MESS_DATA_DIR"
 	EnvProxy   = "MESS_PROXY"
 )
@@ -26,6 +27,8 @@ type Environment struct {
 	NodeID uint64
 	// Service holds the service name from EnvService.
 	Service string
+	// Alias holds service aliases from EnvAlias.
+	Alias []string
 	// Realm holds the realm (namespace) name from EnvRealm.
 	Realm string
 	// DataDir points to the persistent directory for service data, taken from EnvDataDir.
@@ -50,13 +53,17 @@ var env *Environment
 func Env() Environment { return *env }
 
 func init() {
-
 	mode := strings.ToLower(os.Getenv(EnvMode))
+	alias := strings.Split(os.Getenv(EnvAlias), ",")
+	for i, v := range alias {
+		alias[i] = strings.TrimSpace(v)
+	}
 	env = &Environment{
 		Mode:    mode,
 		Dev:     mode == "" || mode == "dev",
 		Realm:   os.Getenv(EnvRealm),
 		Service: os.Getenv(EnvService),
+		Alias:   alias,
 		DataDir: os.Getenv(EnvDataDir),
 		Proxy:   os.Getenv(EnvProxy),
 	}
