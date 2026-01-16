@@ -275,7 +275,7 @@ func (a API) OpenSubscription(topic string, filename string) (*Subscription, err
 	s := &Subscription{
 		api:    a,
 		topic:  topic,
-		stored: c,
+		cursor: c,
 	}
 	return s, nil
 }
@@ -311,7 +311,7 @@ func (a API) CreateSubscription(filename string, topic string, cursor EventCurso
 	s := &Subscription{
 		api:    a,
 		topic:  topic,
-		stored: c,
+		cursor: c,
 	}
 
 	return s, nil

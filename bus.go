@@ -148,7 +148,7 @@ func (ec EventCursor) ExtractNode(id uint64) monotime.UUID {
 func (ec EventCursor) Merge(cursor EventCursor) EventCursor {
 	result := ec
 	for _, v := range cursor {
-		result = ec.Update(v)
+		result = result.Update(v)
 	}
 	return result
 }
@@ -168,9 +168,12 @@ func (ec EventCursor) Nodes() []uint64 {
 type Subscription struct {
 	api    API
 	topic  string
-	stored *boltCursor
+	cursor *boltCursor
 	mu     sync.Mutex
 	closed bool
+
+	cancel   func()
+	cancelMu sync.Mutex
 }
 
 // Receive dispatches new events to the provided handler.
@@ -200,16 +203,24 @@ func (s *Subscription) Receive(ctx context.Context, filter []MetaFilter, handler
 		}
 	}()
 
+	subCtx, cancel := context.WithCancel(ctx)
+
+	s.cancelMu.Lock()
+	s.cancel = cancel
+	s.cancelMu.Unlock()
+
+	defer cancel()
+
 	req := SubscribeRequest{
 		Topic:  s.topic,
-		Cursor: s.stored.get(),
+		Cursor: s.cursor.get(),
 		Filter: filter,
 	}
 
-	return s.api.Subscribe(ctx, req, func(event *Event) (bool, error) {
+	return s.api.Subscribe(subCtx, req, func(event *Event) (bool, error) {
 		ok, herr := handler(event)
 		if ok && herr == nil {
-			if serr := s.stored.update(event.ID); serr != nil {
+			if serr := s.cursor.update(event.ID); serr != nil {
 				return false, fmt.Errorf("error persisting cursor: %w", serr)
 			}
 		}
@@ -221,7 +232,7 @@ func (s *Subscription) Receive(ctx context.Context, filter []MetaFilter, handler
 // The returned cursor can be used on any node to resume event processing
 // from the current position of this subscription.
 func (s *Subscription) Cursor() EventCursor {
-	return s.stored.get()
+	return s.cursor.get()
 }
 
 // Update updates the cursor entry for the node encoded in the provided
@@ -232,7 +243,7 @@ func (s *Subscription) Cursor() EventCursor {
 //
 // It does not interrupt any active handlers and does not shift their positions.
 func (s *Subscription) Update(uuid monotime.UUID) error {
-	return s.stored.update(uuid)
+	return s.cursor.update(uuid)
 }
 
 // Topic returns the subscription topic.
@@ -242,14 +253,29 @@ func (s *Subscription) Topic() string {
 
 // Close closes the underlying cursor store.
 // Close blocks until any active Receive calls return.
+// Close must not be called inside a handler provided to Receive.
 func (s *Subscription) Close() error {
+
+	s.cancelMu.Lock()
+	if s.cancel != nil {
+		s.cancel()
+	}
+	s.cancelMu.Unlock()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	if s.closed {
 		return nil
 	}
+
+	s.cancelMu.Lock()
+	s.cancel = nil
+	s.cancelMu.Unlock()
+
 	s.closed = true
-	return s.stored.close()
+
+	return s.cursor.close()
 }
 
 /**/
