@@ -414,9 +414,9 @@ func (cli *CLI) cmdShowRec(cmd *command) (int, error) {
 		return 1, nil
 	}
 	b, err := json.MarshalIndent(mess.Service{
-		Name:    "service-name",
-		Realm:   "namespace",
+		Name:    "ServiceName",
 		Alias:   []string{"friendly-name", "http-api"},
+		Realm:   "namespace",
 		Manual:  false,
 		Private: false,
 		Start:   "binary_filename",
@@ -427,7 +427,8 @@ func (cli *CLI) cmdShowRec(cmd *command) (int, error) {
 		Env: []string{
 			"EXAMLE_ENV=value",
 		},
-		Listen:  "tcp://127.0.0.1:8090",
+		Listen:  ":8090",
+		Proxy:   "tcp",
 		Timeout: 30,
 		Meta: map[string]string{
 			"custom": "field",

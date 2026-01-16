@@ -257,10 +257,12 @@ func (s *Subscription) Topic() string {
 func (s *Subscription) Close() error {
 
 	s.cancelMu.Lock()
-	if s.cancel != nil {
-		s.cancel()
-	}
+	cancel := s.cancel
 	s.cancelMu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -316,7 +318,7 @@ func newBoltCursor(topic string, start EventCursor, filename string) (*boltCurso
 			}
 
 		} else {
-			if err := b.Put(tkey, []byte(topic)); err != nil {
+			if err = b.Put(tkey, []byte(topic)); err != nil {
 				return err
 			}
 		}
@@ -334,10 +336,10 @@ func newBoltCursor(topic string, start EventCursor, filename string) (*boltCurso
 			for _, id := range start {
 				v = append(v, id[:]...)
 			}
-			if err := b.Put(key, v); err != nil {
+			if err = b.Put(key, v); err != nil {
 				return err
 			}
-			cur = start
+			cur = start.Clone()
 		}
 
 		return nil
@@ -377,7 +379,8 @@ func (c *boltCursor) update(uuid monotime.UUID) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	cur := c.cursor.Update(uuid)
+	cur := c.cursor.Clone()
+	cur = cur.Update(uuid)
 
 	tx, err := c.bolt.Begin(true)
 	if err != nil {
