@@ -638,16 +638,28 @@ func (n *node) loadDevState(devConfig string) error {
 
 	devConfigDir := filepath.Dir(devConfig)
 	for _, svc := range *services {
-		if svc.Listen != "" && !filepath.IsAbs(svc.Listen) {
-			svc.Listen, err = filepath.Abs(filepath.Join(devConfigDir, svc.Listen))
+		if svc.Listen != "" {
+			network, addr, err := internal.ParseNetworkAddr(svc.Listen)
 			if err != nil {
-				return fmt.Errorf("error constructing absolute path for Listen (%v): %w", svc.Listen, err)
+				return fmt.Errorf("invalid Listen (%v): %w", svc.Listen, err)
+			}
+			if network == "unix" && !filepath.IsAbs(addr) {
+				svc.Listen, err = filepath.Abs(filepath.Join(devConfigDir, addr))
+				if err != nil {
+					return fmt.Errorf("error constructing absolute path for Listen (%v): %w", svc.Listen, err)
+				}
 			}
 		}
-		if svc.Proxy != "" && !filepath.IsAbs(svc.Proxy) {
-			svc.Proxy, err = filepath.Abs(filepath.Join(devConfigDir, svc.Proxy))
-			if err != nil {
-				return fmt.Errorf("error constructing absolute path for Proxy (%v): %w", svc.Proxy, err)
+		if svc.Proxy != "" {
+			network, addr, perr := internal.ParseNetworkAddr(svc.Proxy)
+			if perr != nil {
+				return fmt.Errorf("invalid Proxy (%v): %w", svc.Proxy, perr)
+			}
+			if network == "unix" && !filepath.IsAbs(addr) {
+				svc.Proxy, err = filepath.Abs(filepath.Join(devConfigDir, addr))
+				if err != nil {
+					return fmt.Errorf("error constructing absolute path for Proxy (%v): %w", svc.Proxy, err)
+				}
 			}
 		}
 	}
