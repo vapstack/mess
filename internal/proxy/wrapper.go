@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -112,7 +113,8 @@ func (w *Wrapper) FromLocal(r *http.Request) (err error) {
 		return err
 	}
 
-	w.Target.Service = r.Host // r.URL.Hostname()
+	host, _, _ := strings.Cut(r.Host, ":")
+	w.Target.Service = host // r.URL.Hostname()
 	if w.Target.Service == "" {
 		w.Target.Service = r.URL.Hostname()
 	}

@@ -30,9 +30,10 @@ func Verify(publicKey ed25519.PublicKey, value string) error {
 		return errors.New("signature verification failed")
 	}
 
-	ts := int64(binary.BigEndian.Uint64(data[:8]))
+	ts := time.Unix(int64(binary.BigEndian.Uint64(data[:8])), 0)
+	since := time.Since(ts)
 
-	if time.Since(time.Unix(ts, 0)) > 30*time.Second {
+	if since > 30*time.Second || since < -30*time.Second {
 		return errors.New("signature verification failed")
 	}
 

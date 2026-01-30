@@ -67,6 +67,9 @@ func (cli *CLI) cmdNew(cmd *command) (int, error) {
 	/**/
 
 	cli.state.LastID++
+	if cli.state.LastID > uint64(mess.MaxNodeID) {
+		return 1, fmt.Errorf("node id exceeds %v (16-bit)", mess.MaxNodeID)
+	}
 	nodeID := cli.state.LastID
 
 	days := 365
@@ -124,7 +127,7 @@ func (cli *CLI) cmdNew(cmd *command) (int, error) {
 
 func (cli *CLI) cmdGen(cmd *command) (int, error) {
 
-	if len(cmd.args) != 1 {
+	if l := len(cmd.args); l < 1 || l > 2 {
 		printCommandUsage(cmd.name, 0)
 		return 1, nil
 	}

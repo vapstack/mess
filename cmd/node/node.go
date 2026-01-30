@@ -80,6 +80,9 @@ func main() {
 		busdir: filepath.Join(binPath, "bus"),
 		dev:    dev,
 	}
+	n.remoteServices.Store(&rsMap{})
+	n.localServices.Store(&lsMap{})
+	n.localAliases.Store(&lsAliasMap{})
 
 	if !n.dev {
 		if err = os.MkdirAll(n.logdir, 0o700); err != nil {

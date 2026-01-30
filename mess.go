@@ -3,6 +3,7 @@ package mess
 import (
 	"encoding/json"
 	"errors"
+	"maps"
 	"slices"
 	"strings"
 
@@ -12,6 +13,8 @@ import (
 const PublicPort = 2701
 
 const ServiceName = "mess"
+
+const MaxNodeID = ^uint16(0)
 
 const (
 	TargetNodeHeader    = "X-Mess-Target-Node"
@@ -90,7 +93,7 @@ func (ns *NodeState) Clone() *NodeState {
 }
 
 func (ns *NodeState) GetNode(id uint64) *Node {
-	if ns.Node.ID == id {
+	if ns.Node != nil && ns.Node.ID == id {
 		return ns.Node
 	}
 	for nid, node := range ns.Map {
@@ -102,10 +105,9 @@ func (ns *NodeState) GetNode(id uint64) *Node {
 }
 
 // Filter returns a NodeList holding nodes for which the provided fn returns true.
-// The resulting slice is ordered by proximity to the current node (closest to farthest).
 func (ns *NodeState) Filter(fn func(n *Node) bool) NodeList {
 	nodes := make([]*Node, 0, len(ns.Map)/2)
-	if fn(ns.Node) {
+	if ns.Node != nil && fn(ns.Node) {
 		nodes = append(nodes, ns.Node)
 	}
 	for _, node := range ns.Map {
@@ -279,11 +281,13 @@ func (ns *NodeState) collect(service string, activeOnly bool, localNameMatch boo
 // including the current node itself as the first element.
 // If NodeState does not hold a valid Node, nil is returned.
 func (ns *NodeState) NodesByProximity() NodeList {
-	if ns.Node == nil || len(ns.Map) == 0 {
+	if ns.Node == nil {
 		return nil
 	}
 	nodes := make(NodeList, 0, len(ns.Map)+1)
-	nodes = append(nodes, ns.Node)
+	if ns.Node != nil {
+		nodes = append(nodes, ns.Node)
+	}
 	for _, node := range ns.Map {
 		nodes = append(nodes, node)
 	}
@@ -421,6 +425,9 @@ func (n *Node) Address() string {
 }
 
 func (n *Node) Clone() *Node {
+	if n == nil {
+		return nil
+	}
 	x := new(Node)
 	*x = *n
 	x.Services = n.Services.Clone()
@@ -466,7 +473,7 @@ type PublishMap map[string]map[string]monotime.UUID
 func (pm PublishMap) Clone() PublishMap {
 	x := make(PublishMap)
 	for k, v := range pm {
-		x[k] = v
+		x[k] = maps.Clone(v)
 	}
 	return x
 }
@@ -485,7 +492,7 @@ type ListenMap map[string][]string
 func (cm ListenMap) Clone() ListenMap {
 	x := make(ListenMap)
 	for k, v := range cm {
-		x[k] = v
+		x[k] = slices.Clone(v)
 	}
 	return x
 }
@@ -544,6 +551,9 @@ func (nm NodeMap) Get(id uint64) *Node {
 }
 
 func (nm NodeMap) Clone() NodeMap {
+	if nm == nil {
+		return nil
+	}
 	x := make(NodeMap)
 	for k, rec := range nm {
 		x[k] = rec.Clone()

@@ -154,9 +154,11 @@ func (m *Manager) Start() error {
 		return fmt.Errorf("no service files found")
 	}
 
-	m.stopped.Store(false)
-
 	svc := m.updated.Load()
+	if svc.Start == "" {
+		return errors.New("service has not \"start\" command")
+	}
+	m.stopped.Store(false)
 	m.current.Store(svc)
 
 	exeDir := filepath.Join(m.svcdir, m.meta.Version)
@@ -181,14 +183,10 @@ func (m *Manager) Start() error {
 	if !m.Dev {
 
 		var exe string
-		if svc.Start != "" {
-			if filepath.IsAbs(svc.Start) {
-				exe = svc.Start
-			} else {
-				exe = filepath.Join(exeDir, svc.Start)
-			}
+		if filepath.IsAbs(svc.Start) {
+			exe = svc.Start
 		} else {
-			exe = filepath.Join(exeDir, svc.Name)
+			exe = filepath.Join(exeDir, svc.Start)
 		}
 
 		p := &proc.Proc{

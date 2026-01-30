@@ -3,10 +3,12 @@ package main
 import (
 	"fmt"
 	"log"
+	"math/bits"
 	"path/filepath"
 	"unsafe"
 
 	"github.com/cockroachdb/pebble/v2"
+	"github.com/vapstack/mess"
 	"go.etcd.io/bbolt"
 
 	"github.com/shirou/gopsutil/v4/mem"
@@ -106,6 +108,7 @@ func (n *node) getSeq(realm, name string) (seq uint64, err error) {
 			if err != nil {
 				return 0, fmt.Errorf("error opening db: %w", err)
 			}
+			n.seqdb.Store(bolt)
 		}
 	}
 
@@ -145,9 +148,8 @@ func (n *node) getSeq(realm, name string) (seq uint64, err error) {
 	return nodeSeq(n.id, seq), tx.Commit()
 }
 
-const nodeBits = 16
-
 func nodeSeq(nodeID uint64, counter uint64) uint64 {
+	nodeBits := bits.Len(uint(mess.MaxNodeID))
 	nodeMask := (uint64(1) << nodeBits) - 1
 	counterBits := 64 - nodeBits
 	counterMask := (uint64(1) << counterBits) - 1
