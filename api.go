@@ -143,7 +143,7 @@ func (a API) Subscribe(ctx context.Context, req SubscribeRequest, handler func(*
 
 	const (
 		minBackoff = time.Second
-		maxBackoff = 30 * time.Second
+		maxBackoff = time.Minute
 	)
 
 	backoff := minBackoff
