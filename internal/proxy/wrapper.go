@@ -123,7 +123,9 @@ func (w *Wrapper) FromLocal(r *http.Request) (err error) {
 		w.Target.Service = h
 	}
 
-	w.Target.Realm = r.Header.Get(mess.TargetRealmHeader)
+	if w.Target.Realm = r.Header.Get(mess.TargetRealmHeader); w.Target.Realm == "" {
+		w.Target.Realm = w.Caller.Realm
+	}
 	w.Target.NodeID, err = parseTargetNode(r.Header.Get(mess.TargetNodeHeader))
 
 	return err
@@ -138,7 +140,9 @@ func (w *Wrapper) FromRemote(r *http.Request) (err error) {
 	}
 
 	w.Target.Service = r.Header.Get(mess.TargetServiceHeader)
-	w.Target.Realm = r.Header.Get(mess.TargetRealmHeader)
+	if w.Target.Realm = r.Header.Get(mess.TargetRealmHeader); w.Target.Realm == "" {
+		w.Target.Realm = w.Caller.Realm
+	}
 	w.Target.NodeID, err = parseTargetNode(r.Header.Get(mess.TargetNodeHeader))
 
 	return err
