@@ -172,7 +172,7 @@ func (a API) Subscribe(ctx context.Context, req SubscribeRequest, handler func(*
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return ctxErr
 			}
-			log.Printf("mess: Subscribe: request error: %v\n", err)
+			log.Printf("mess: Subscribe (%v): request error: %v\n", req.Topic, err)
 
 			select {
 			case <-done:
