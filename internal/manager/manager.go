@@ -155,7 +155,7 @@ func (m *Manager) Start() error {
 	}
 
 	svc := m.updated.Load()
-	if svc.Start == "" {
+	if !m.Dev && svc.Start == "" {
 		return errors.New("service has no \"start\" field")
 	}
 	m.stopped.Store(false)
