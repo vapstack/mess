@@ -156,7 +156,7 @@ func (m *Manager) Start() error {
 
 	svc := m.updated.Load()
 	if svc.Start == "" {
-		return errors.New("service has not \"start\" command")
+		return errors.New("service has no \"start\" field")
 	}
 	m.stopped.Store(false)
 	m.current.Store(svc)
