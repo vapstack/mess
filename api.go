@@ -169,8 +169,8 @@ func (a API) Subscribe(ctx context.Context, req SubscribeRequest, handler func(*
 		res, err := a.Client.Do(r)
 		if err != nil {
 
-			if err = ctx.Err(); err != nil {
-				return err
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
 			}
 			log.Printf("mess: Subscribe: request error: %v\n", err)
 
